@@ -126,6 +126,8 @@ Each phase is delegated to coding sub-agents; the orchestrator (this session) re
 | 4 AI layer (deepagents) | three touchpoints, prompt persistence, confirmation gate | Proposal persisted with prompt; nothing enters plan unconfirmed; tests pass with fake model |
 | 5 API + demo | FastAPI routes, `scripts/demo.py` | End-to-end demo runs on dummy data |
 | 6 Hand verification | Orchestrator checks numbers by hand against generator parameters | Reviewed figures documented in `VERIFICATION.md` |
+| 7 Context middleware + skills | deepagents middleware: tool-result eviction, clear old tool results, summarization with token trigger, prompt caching; per-call audit log persisted on `ai_record`; one SKILL.md per touchpoint | Summarization/eviction proven offline; every model call's literal request stored; skills listed in the stored prompt |
+| 8 Guardrail middleware (deferred) | Per-touchpoint tool allowlist in `wrap_tool_call`, model/tool call limits | Deferred by user decision on 2026-09-09 |
 
 ## 6. Quality gates (from the PDF, kept)
 

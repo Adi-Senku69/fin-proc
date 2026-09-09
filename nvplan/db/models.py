@@ -208,6 +208,9 @@ class AiRecord(Base):
     confirmed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    # Per-model-call audit log (nvplan.ai.audit): what was literally sent to and returned by
+    # the model on every call of the run, incl. summarization / eviction / clearing markers.
+    call_log_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
 
     scenario: Mapped[Scenario | None] = relationship()
     category: Mapped[Category | None] = relationship()

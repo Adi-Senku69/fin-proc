@@ -207,12 +207,13 @@ def _register(app: FastAPI) -> None:
     def ai_records(touchpoint: str | None = None, status: str | None = None, session: Session = Depends(get_session)):
         return [q.ai_record_dict(session, r) for r in q.list_ai_records(session, touchpoint, status)]
 
-    @app.get("/ai/records/{record_id}", response_model=S.AiRecordOut)
+    @app.get("/ai/records/{record_id}", response_model=S.AiRecordDetailOut)
     def ai_record(record_id: int, session: Session = Depends(get_session)):
         rec = session.get(AiRecord, record_id)
         if rec is None:
             raise LookupError(f"ai_record {record_id} not found")
-        return q.ai_record_dict(session, rec)
+        # The per-call audit log (nvplan.ai.audit) is only on the detail route; the list stays light.
+        return {**q.ai_record_dict(session, rec), "call_log": list(rec.call_log_json or [])}
 
     @app.post("/ai/records/{record_id}/confirm", response_model=S.ConfirmOut)
     def ai_confirm(record_id: int, body: S.ConfirmIn, session: Session = Depends(get_session)):

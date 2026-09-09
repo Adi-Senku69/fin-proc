@@ -21,3 +21,12 @@ PLAN_YEARS: tuple[int, int] = (2026, 2030)
 ILLUSTRATIVE_LABEL = "ILLUSTRATIVE"
 
 AI_MODEL = "claude-opus-5"
+
+# Context-window policy defaults for the AI layer (see nvplan/ai/context.py).
+# Approximate tokens (count_tokens_approximately: chars/4 + 3 per message), not model-exact.
+AI_CONTEXT_SUMMARIZE_AT = 120_000  # summarize + offload history when the request exceeds this
+AI_CONTEXT_SUMMARIZE_KEEP_MESSAGES = 6  # most recent messages kept verbatim after a summary
+AI_CONTEXT_CLEAR_TOOL_USES_AT = 60_000  # clear old tool results (request-only) before summarization is needed
+AI_CONTEXT_CLEAR_TOOL_USES_KEEP = 3  # most recent tool results never cleared
+AI_CONTEXT_TOOL_RESULT_EVICT_TOKENS = 4_000  # tool results above this go to /large_tool_results/<id> in state
+AI_CONTEXT_CACHE_TTL = "5m"  # Anthropic prompt-cache TTL ("5m" | "1h"); ignored for non-Anthropic models

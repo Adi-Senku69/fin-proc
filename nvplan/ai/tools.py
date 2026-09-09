@@ -71,6 +71,9 @@ class AiRunContext:
     default_value: float | None = None
     ai_record_id: int | None = None
     note_ids: list[int] = field(default_factory=list)
+    # One entry per model call, appended by nvplan.ai.audit.ContextAuditMiddleware and
+    # persisted as ai_record.call_log_json (the literal per-call prompt/response record).
+    call_log: list[dict[str, Any]] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -283,7 +286,10 @@ def make_read_tools(session_factory: SessionFactory) -> list[BaseTool]:
     @tool
     def get_env_framework() -> str:
         """The environmental scan framework: domains and their positions with the categories they affect."""
-        return _dumps(load_env_framework())
+        # Pretty-printed (one field per line): the 54-position framework is the largest tool
+        # result and may be evicted to /large_tool_results/ by the context middleware; the
+        # model then pages through it with read_file(offset, limit), which is line-based.
+        return json.dumps(load_env_framework(), ensure_ascii=False, indent=1, default=str)
 
     @tool
     def get_control_table() -> str:

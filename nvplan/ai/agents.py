@@ -8,8 +8,17 @@ Design
 * ``build_touchpoint_agent`` builds one deep agent per touchpoint with exactly
   the tools that touchpoint needs and a ``ToolStrategy`` structured output.
   The built-in filesystem tool set is replaced by a read-only one
-  (``read_file`` only) so no agent ever carries a tool named write_*/edit_*/
-  delete.
+  (``read_file``/``ls``/``grep``) so no agent ever carries a tool named
+  write_*/edit_*/delete.
+* Every agent gets the context stack from ``nvplan.ai.context`` (tool-result
+  eviction, tool-use clearing, summarization with history offload, prompt
+  caching; thresholds from a ``ContextPolicy``, default from ``config``) plus
+  ``nvplan.ai.audit.ContextAuditMiddleware`` which logs every model call into
+  ``AiRunContext.call_log``; the entrypoints persist that as
+  ``ai_record.call_log_json``. Files the middleware writes live in graph state
+  (``CompositeBackend(default=StateBackend())``), never on disk or in the DB;
+  ``/skills/`` is routed read-only to ``nvplan/ai/skills`` so each agent can
+  ``read_file`` its SKILL.md (``skills=["/skills/"]``).
 * ``build_advisor`` builds one orchestrating agent whose three subagents are
   the touchpoints, for free-form questions.
 * ``run_env_scan`` / ``run_revenue_proposal`` / ``run_deviation_explanation``
@@ -43,6 +52,8 @@ from sqlalchemy import select
 
 from nvplan import config
 from nvplan.ai import prompts
+from nvplan.ai.audit import ContextAuditMiddleware
+from nvplan.ai.context import SKILLS_SOURCE, ContextPolicy, build_context_middleware, make_backend
 from nvplan.ai.schemas import TOUCHPOINT_SCHEMAS, DeviationExplanation, EnvScanResult, RevenueProposal
 from nvplan.ai.tools import (
     AiRunContext,
@@ -168,11 +179,10 @@ def _response_text(messages: Sequence[BaseMessage], structured: Any) -> str:
 # --------------------------------------------------------------------------- agent builders
 
 
-def _read_only_filesystem(backend: Any):
-    """Replace deepagents' built-in filesystem tools with ``read_file`` only."""
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
-    return FilesystemMiddleware(backend=backend, tools=["read_file"])
+def _agent_middleware(policy: ContextPolicy | None, *, model: BaseChatModel, backend: Any, ctx: AiRunContext) -> list[Any]:
+    """Context stack (read-only filesystem, clearing, summarization, caching) + the audit, in
+    that order: the audit is last so it sees the request after summarization/clearing."""
+    return [*build_context_middleware(policy, model=model, backend=backend), ContextAuditMiddleware(ctx)]
 
 
 def touchpoint_tools(touchpoint: str, session_factory: SessionFactory, ctx: AiRunContext | None = None) -> list[BaseTool]:
@@ -192,30 +202,41 @@ def build_touchpoint_agent(
     model: BaseChatModel,
     session_factory: SessionFactory,
     extra_context: AiRunContext | None = None,
+    policy: ContextPolicy | None = None,
 ):
-    """One deep agent for one touchpoint: its tools, its literal system prompt, its schema.
+    """One deep agent for one touchpoint: its tools, its literal system prompt, its schema,
+    its skill (``/skills/``), the context stack for ``policy`` (default: ``config``) and the
+    per-call audit into ``extra_context.call_log``.
 
     ``extra_context`` is the run context shared with the write tools (default value,
     year, scenario, model version, and the ids the tools produce)."""
     from deepagents import create_deep_agent
-    from deepagents.backends import StateBackend
 
-    backend = StateBackend()
+    ctx = extra_context if extra_context is not None else AiRunContext()
+    backend = make_backend()
     return create_deep_agent(
         model=model,
-        tools=touchpoint_tools(touchpoint, session_factory, extra_context),
+        tools=touchpoint_tools(touchpoint, session_factory, ctx),
         system_prompt=prompts.TOUCHPOINT_SYSTEM_PROMPTS[touchpoint],
         response_format=ToolStrategy(TOUCHPOINT_SCHEMAS[touchpoint]),
         backend=backend,
-        middleware=[_read_only_filesystem(backend)],
+        skills=[SKILLS_SOURCE],
+        middleware=_agent_middleware(policy, model=model, backend=backend, ctx=ctx),
         name=f"nvplan-{touchpoint}",
     )
 
 
 def touchpoint_subagents(
-    session_factory: SessionFactory, ctx: AiRunContext | None = None, *, backend: Any, model: BaseChatModel | None = None
+    session_factory: SessionFactory,
+    ctx: AiRunContext | None = None,
+    *,
+    backend: Any,
+    model: BaseChatModel,
+    policy: ContextPolicy | None = None,
 ) -> list[dict[str, Any]]:
-    """The three touchpoints as deepagents ``SubAgent`` dicts."""
+    """The three touchpoints as deepagents ``SubAgent`` dicts (same skills, context stack and
+    audit as the standalone agents; ``model`` is the subagents' model)."""
+    ctx = ctx if ctx is not None else AiRunContext()
     subagents: list[dict[str, Any]] = []
     for tp in TOUCHPOINTS:
         spec: dict[str, Any] = {
@@ -224,28 +245,34 @@ def touchpoint_subagents(
             "system_prompt": prompts.TOUCHPOINT_SYSTEM_PROMPTS[tp],
             "tools": touchpoint_tools(tp, session_factory, ctx),
             "response_format": ToolStrategy(TOUCHPOINT_SCHEMAS[tp]),
-            "middleware": [_read_only_filesystem(backend)],
+            "skills": [SKILLS_SOURCE],
+            "middleware": _agent_middleware(policy, model=model, backend=backend, ctx=ctx),
+            "model": model,
         }
-        if model is not None:
-            spec["model"] = model
         subagents.append(spec)
     return subagents
 
 
-def build_advisor(model: BaseChatModel, session_factory: SessionFactory, ctx: AiRunContext | None = None):
+def build_advisor(
+    model: BaseChatModel,
+    session_factory: SessionFactory,
+    ctx: AiRunContext | None = None,
+    *,
+    policy: ContextPolicy | None = None,
+):
     """One orchestrating deep agent with the three touchpoints as subagents."""
     from deepagents import create_deep_agent
-    from deepagents.backends import StateBackend
 
-    backend = StateBackend()
+    backend = make_backend()
     ctx = ctx or AiRunContext(model_version=model_version(model))
     return create_deep_agent(
         model=model,
         tools=make_read_tools(session_factory),
         system_prompt=prompts.ADVISOR_SYSTEM,
-        subagents=touchpoint_subagents(session_factory, ctx, backend=backend),
+        subagents=touchpoint_subagents(session_factory, ctx, backend=backend, model=model, policy=policy),
         backend=backend,
-        middleware=[_read_only_filesystem(backend)],
+        skills=[SKILLS_SOURCE],
+        middleware=_agent_middleware(policy, model=model, backend=backend, ctx=ctx),
         name="nvplan-advisor",
     )
 
@@ -372,6 +399,7 @@ def run_env_scan(
     *,
     model: str | BaseChatModel | None = None,
     positions_subset: list[str] | None = None,
+    policy: ContextPolicy | None = None,
 ) -> AiRecord:
     """Touchpoint 1. Runs the scan, persists the ai_record and links the notes it wrote."""
     chat = get_model(model)
@@ -388,7 +416,7 @@ def run_env_scan(
         )
     ctx.prompt_text = _prompt_text(prompts.ENV_SCAN_SYSTEM, user_prompt)
 
-    agent = build_touchpoint_agent("env_scan", model=chat, session_factory=session_factory, extra_context=ctx)
+    agent = build_touchpoint_agent("env_scan", model=chat, session_factory=session_factory, extra_context=ctx, policy=policy)
     result, capture = _invoke(agent, user_prompt)
     scan: EnvScanResult = result["structured_response"]
 
@@ -400,6 +428,7 @@ def run_env_scan(
             rationale=scan.summary,
             model_version=ctx.model_version,
             status=AiStatus.proposed,
+            call_log_json=list(ctx.call_log),
         )
         s.add(rec)
         s.flush()
@@ -418,6 +447,7 @@ def run_revenue_proposal(
     year: int,
     default_value: float,
     model: str | BaseChatModel | None = None,
+    policy: ContextPolicy | None = None,
 ) -> AiRecord:
     """Touchpoint 2. ``default_value`` is the valorized default revenue for ``year`` (k EUR)."""
     chat = get_model(model)
@@ -440,7 +470,7 @@ def run_revenue_proposal(
         )
     ctx.prompt_text = _prompt_text(prompts.REVENUE_PROPOSAL_SYSTEM, user_prompt)
 
-    agent = build_touchpoint_agent("revenue_proposal", model=chat, session_factory=session_factory, extra_context=ctx)
+    agent = build_touchpoint_agent("revenue_proposal", model=chat, session_factory=session_factory, extra_context=ctx, policy=policy)
     result, capture = _invoke(agent, user_prompt)
     proposal: RevenueProposal = result["structured_response"]
 
@@ -458,6 +488,7 @@ def run_revenue_proposal(
         if isinstance(out, str):
             raise ProposalRejected(out)
         out.prompt_text = _prompt_text(_system_as_sent(capture, prompts.REVENUE_PROPOSAL_SYSTEM), user_prompt)
+        out.call_log_json = list(ctx.call_log)
         s.commit()
         return out
 
@@ -468,6 +499,7 @@ def run_deviation_explanation(
     scenario_kind: str,
     year: int,
     model: str | BaseChatModel | None = None,
+    policy: ContextPolicy | None = None,
 ) -> AiRecord:
     """Touchpoint 3. Persists the explanation as an ai_record (no proposed value)."""
     chat = get_model(model)
@@ -483,7 +515,7 @@ def run_deviation_explanation(
     ctx = AiRunContext(touchpoint=Touchpoint.deviation_explanation, model_version=model_version(chat), scenario_id=scenario_id, year=year)
     ctx.prompt_text = _prompt_text(prompts.DEVIATION_EXPLANATION_SYSTEM, user_prompt)
 
-    agent = build_touchpoint_agent("deviation_explanation", model=chat, session_factory=session_factory, extra_context=ctx)
+    agent = build_touchpoint_agent("deviation_explanation", model=chat, session_factory=session_factory, extra_context=ctx, policy=policy)
     result, capture = _invoke(agent, user_prompt)
     explanation: DeviationExplanation = result["structured_response"]
 
@@ -497,6 +529,7 @@ def run_deviation_explanation(
             scenario_id=scenario_id,
             year=int(year),
             status=AiStatus.proposed,
+            call_log_json=list(ctx.call_log),
         )
         s.add(rec)
         s.commit()

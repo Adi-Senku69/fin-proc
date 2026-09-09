@@ -140,6 +140,16 @@ class AiRecordOut(BaseModel):
     note_ids: list[int] = Field(default_factory=list, description="external notes written by this record (env scan)")
 
 
+class AiRecordDetailOut(AiRecordOut):
+    """One record incl. the per-model-call audit log (GET /ai/records/{id} only; the list stays light)."""
+
+    call_log: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="One entry per model call: the literal system prompt + messages sent, the response, "
+        "approx tokens, and summarization / eviction / cleared-tool-result markers.",
+    )
+
+
 class ConfirmIn(BaseModel):
     confirmed_by: str = Field(min_length=1)
 

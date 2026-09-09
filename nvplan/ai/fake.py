@@ -6,7 +6,12 @@
 and cycle when exhausted, so every scripted run ends with the structured-output
 tool call, which terminates the agent loop.
 
-One scripted scenario per touchpoint keeps the tests deterministic.
+One scripted scenario per touchpoint keeps the tests deterministic. Every
+script starts with a ``read_file`` of the touchpoint's skill
+(``/skills/<name>/SKILL.md``), which proves the skills route of the composite
+backend resolves; the tests assert the skill text came back in the ToolMessage.
+``fake_summary_model`` is a separate instance for the summarization middleware
+(a shared fake would consume scripted turns).
 """
 
 from __future__ import annotations
@@ -39,6 +44,23 @@ def ai_calls(*calls: dict[str, Any], content: str = "") -> AIMessage:
 def structured(schema_name: str, payload: dict[str, Any], content: str = "") -> AIMessage:
     """The final turn: a tool call named after the response schema (ToolStrategy)."""
     return ai_calls(tool_call(schema_name, payload, f"structured-{schema_name}"), content=content)
+
+
+SKILL_PATHS: dict[str, str] = {
+    "env_scan": "/skills/env-scan-54-positions/SKILL.md",
+    "revenue_proposal": "/skills/revenue-proposal-method/SKILL.md",
+    "deviation_explanation": "/skills/deviation-explanation-method/SKILL.md",
+}
+
+
+def read_skill(touchpoint: str) -> AIMessage:
+    """First scripted turn of every touchpoint: read its SKILL.md."""
+    return ai_calls(tool_call("read_file", {"file_path": SKILL_PATHS[touchpoint]}, f"skill-{touchpoint}"))
+
+
+def fake_summary_model(summary: str = "FAKE SUMMARY: earlier tool reads of the data (details offloaded).") -> FakeToolCallingModel:
+    """A dedicated fake for ``ContextPolicy.summarization_model`` (plain text response)."""
+    return FakeToolCallingModel(responses=[AIMessage(content=summary)])
 
 
 # --------------------------------------------------------------------------- scripted scenarios
@@ -100,6 +122,7 @@ def scripted_env_scan_model(findings: list[dict[str, Any]] | None = None, *, sum
     )
     return FakeToolCallingModel(
         responses=[
+            read_skill("env_scan"),
             ai_calls(tool_call("get_env_framework", {}, "fw"), tool_call("get_external_notes", {}, "notes")),
             ai_calls(*note_calls),
             structured("EnvScanResult", result.model_dump(), content=result.summary),
@@ -126,6 +149,7 @@ def scripted_revenue_model(
     )
     return FakeToolCallingModel(
         responses=[
+            read_skill("revenue_proposal"),
             ai_calls(
                 tool_call("get_actuals", {"category_code": "REV"}, "act"),
                 tool_call("get_external_notes", {}, "notes"),
@@ -159,6 +183,7 @@ def scripted_deviation_model(
     explanation = DeviationExplanation(scenario=scenario_kind, year=year, summary=summary, contributions=contributions)
     return FakeToolCallingModel(
         responses=[
+            read_skill("deviation_explanation"),
             ai_calls(tool_call("get_plan_vs_actual", {"scenario_kind": scenario_kind, "year": year}, "pva")),
             structured("DeviationExplanation", explanation.model_dump(), content=summary),
         ]

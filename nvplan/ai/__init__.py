@@ -9,10 +9,16 @@ from nvplan.ai.agents import (
     run_env_scan,
     run_revenue_proposal,
 )
+from nvplan.ai.audit import ContextAuditMiddleware
+from nvplan.ai.context import DEFAULT_POLICY, ContextPolicy, build_context_middleware
 from nvplan.ai.tools import AiRunContext, make_read_tools, make_write_tools
 
 __all__ = [
     "AiRunContext",
+    "ContextAuditMiddleware",
+    "ContextPolicy",
+    "DEFAULT_POLICY",
+    "build_context_middleware",
     "ProposalRejected",
     "build_advisor",
     "build_touchpoint_agent",

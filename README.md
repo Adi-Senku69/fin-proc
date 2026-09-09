@@ -102,3 +102,5 @@ nvplan/ai/              tools, prompts, schemas, deepagents wiring, fakes (see n
 nvplan/api/             FastAPI app (nvplan-serve), queries, demo (nvplan-demo)
 tests/                  golden regression, consistency, gate, AI guardrails, API, demo
 ```
+
+**Context management and skills**: the AI agents run behind deepagents middleware (large tool-result eviction, clearing of old tool results, token-triggered summarization, Anthropic prompt caching) and load one `SKILL.md` per touchpoint from `nvplan/ai/skills/`. Every model call's literal request is logged to `ai_record.call_log_json` and served by `GET /ai/records/{id}`. Details and tuning in `nvplan/ai/README.md`.
