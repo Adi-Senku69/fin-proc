@@ -17,10 +17,15 @@ dependencies = [
     "pydantic>=2.0",
     "deepagents>=0.7.13",
     "langchain-anthropic>=1.7.1",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "uvicorn>=0.52.4",
 ]
 
 [project.scripts]
 nvplan-gen-data = "nvplan.data.generate:main"
+nvplan-demo = "nvplan.api.demo:main"
+nvplan-serve = "nvplan.api.app:serve"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

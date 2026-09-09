@@ -33,6 +33,10 @@ pl:
     formula: ebit - tax
 bs:
   assets:
+  # NOTE (orchestrator, 2026-09-09): the engine does NOT use the balancing formula below for cash.
+  # Cash is computed from the cash-flow statement (closing_cash = opening_cash + net_cash_flow) and the
+  # balance-sheet identity is then CHECKED, not forced (nvplan/core/statements.py::check_consistency).
+  # The balancing expression is kept only as documentation of the identity it must satisfy.
   - code: cash
     formula: 'balancing: total_liabilities_equity - receivables - inventory - fixed_assets'
   - code: receivables
