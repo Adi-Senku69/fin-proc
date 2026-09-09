@@ -100,7 +100,11 @@ control-table validation, prompt persistence, and the confirmation gate are the 
 
 ## 7. Test suite at the time of writing
 
-`uv run pytest -q`: 137 passed, 2 xfailed (the two documented β-bias cases).
+`uv run pytest -q`: 159 passed, 2 xfailed (the two documented β-bias cases).
+
+AI-layer rules added after the first pass: context management is eviction-only (large tool results move to a
+readable file, nothing is ever blanked from the model's context), and every deviation explanation is checked
+field by field against the deterministic plan-vs-actual table before it is stored; a mismatch rejects it.
 
 ## 8. Follow-ups recommended before the Newvision pilot
 
