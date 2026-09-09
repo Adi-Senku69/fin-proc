@@ -1,7 +1,7 @@
 """Per-call audit of what was actually sent to the model (the compliance artefact).
 
 The PDF rule is "the literal prompt used at any AI step is stored and viewable". With
-summarization, tool-result eviction and tool-use clearing in play, the literal prompt is
+summarization and tool-result eviction in play, the literal prompt is
 different on every model call, so ``ai_record.prompt_text`` (system prompt + rendered user
 prompt) is no longer the whole story. ``ContextAuditMiddleware`` records one entry per model
 call in ``AiRunContext.call_log``; the entrypoints persist it in ``ai_record.call_log_json``
@@ -12,10 +12,11 @@ Position in the stack (verified empirically with the fake model, see
 does not replace a default slot *after* its core stack, in the order given, ahead of the
 prompt-caching tail. ``build_touchpoint_agent`` passes ``[*context middleware, audit]``, so
 the compiled order is ``[Skills] Filesystem [SubAgent] Summarization PatchToolCalls
-ContextEditing ContextAudit AnthropicPromptCaching``. For ``wrap_model_call`` the first entry
-is outermost, so the audit sees the request *after* summarization rewrote it and *after*
-ClearToolUsesEdit replaced old tool results, i.e. exactly the messages the provider gets
-(prompt caching only adds cache-control metadata afterwards).
+ContextAudit AnthropicPromptCaching``. For ``wrap_model_call`` the first entry is outermost,
+so the audit sees the request *after* summarization rewrote it, i.e. exactly the messages the
+provider gets (prompt caching only adds cache-control metadata afterwards). Tool results are
+never cleared (no ``ContextEditingMiddleware``): a large one is evicted to a file at tool
+time, so the request always carries either the data or a pointer to it.
 
 How each field is detected
 --------------------------
@@ -23,8 +24,6 @@ How each field is detected
   ``SummarizationMiddleware`` builds (``additional_kwargs["lc_source"] == "summarization"``),
   or - belt and braces - the request's first non-system message is not the first message in
   ``request.state["messages"]`` (summarization rewrites the request, never the state).
-* ``cleared_tool_results``: ``ToolMessage``s whose content is the ``ClearToolUsesEdit``
-  placeholder (``"[cleared]"``) or that carry ``response_metadata["context_editing"]["cleared"]``.
 * ``evicted_tool_results``: ``ToolMessage``s whose text references ``/large_tool_results/``
   (the pointer deepagents' ``FilesystemMiddleware`` leaves behind after eviction).
 * ``approx_tokens``: ``count_tokens_approximately`` over system + messages (chars/4 + 3 per
@@ -44,7 +43,6 @@ from nvplan.ai.tools import AiRunContext
 
 EXCERPT_CHARS = 2000
 SUMMARY_SOURCE = "summarization"
-CLEARED_PLACEHOLDER = "[cleared]"
 EVICTED_MARKER = "/large_tool_results/"
 
 CALL_LOG_KEYS: tuple[str, ...] = (
@@ -53,7 +51,6 @@ CALL_LOG_KEYS: tuple[str, ...] = (
     "n_messages",
     "approx_tokens",
     "summarized",
-    "cleared_tool_results",
     "evicted_tool_results",
     "tools_offered",
     "system_prompt_chars",
@@ -86,14 +83,6 @@ def _is_summary_message(m: BaseMessage) -> bool:
     return m.type == "human" and m.additional_kwargs.get("lc_source") == SUMMARY_SOURCE
 
 
-def _is_cleared(m: BaseMessage) -> bool:
-    if not isinstance(m, ToolMessage):
-        return False
-    if m.response_metadata.get("context_editing", {}).get("cleared"):
-        return True
-    return message_text(m.content).strip() == CLEARED_PLACEHOLDER
-
-
 def _is_evicted(m: BaseMessage) -> bool:
     return isinstance(m, ToolMessage) and EVICTED_MARKER in message_text(m.content)
 
@@ -122,8 +111,6 @@ def _message_entry(m: BaseMessage) -> dict[str, Any]:
     if isinstance(m, ToolMessage):
         entry["tool_name"] = m.name
         entry["tool_call_id"] = m.tool_call_id
-        if _is_cleared(m):
-            entry["cleared"] = True
         if _is_evicted(m):
             entry["evicted"] = True
     if _is_summary_message(m):
@@ -174,7 +161,6 @@ class ContextAuditMiddleware(AgentMiddleware):
                 "n_messages": len(messages),
                 "approx_tokens": int(count_tokens_approximately(counted)),
                 "summarized": _summarized(messages, request.state),
-                "cleared_tool_results": sum(1 for m in messages if _is_cleared(m)),
                 "evicted_tool_results": sum(1 for m in messages if _is_evicted(m)),
                 "tools_offered": sorted(_tool_name(t) for t in (request.tools or [])),
                 "system_prompt_chars": len(system_text),

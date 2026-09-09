@@ -50,4 +50,7 @@ its valorized path - not to a change in beta. Say this once in the summary.
 - Signs: deviation = actual - plan. A positive cost deviation is *higher* cost than planned.
 - Percentages are relative to plan.
 - Cover every category in the table, even ones with a small deviation (one line is enough).
+- Your figures are checked against the deterministic table after you answer: each
+  category once, plan/actual/deviation to one decimal, the deviation quoted in the
+  explanation text - any mismatch rejects the explanation, nothing is stored.
 - Do not propose actions or new plan values; this touchpoint explains, it does not plan.

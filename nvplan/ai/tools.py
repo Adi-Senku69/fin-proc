@@ -7,7 +7,14 @@ and one ``ai_record`` row with ``status=proposed``. Nothing here touches
 or ``scenario`` (tests/test_ai_guardrails.py checks the row counts).
 
 Every tool opens its own session, commits (write tools) and returns a JSON
-string, because tool results become model-visible text.
+string, because tool results become model-visible text. Row-oriented results
+(``get_actuals``) are printed one row per line: a result above the eviction
+threshold is offloaded to ``/large_tool_results/<id>`` by the context middleware
+and read back with the line-based ``read_file(offset, limit)``.
+
+The plan-vs-actual arithmetic behind ``get_plan_vs_actual`` is
+``nvplan.ai.figures.plan_vs_actual`` - the same function the deviation
+entrypoint uses to cross-check the model's figures (``figures.check_explanation``).
 
 Run context
 -----------
@@ -35,6 +42,7 @@ from langchain_core.tools import BaseTool, tool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from nvplan.ai.figures import _categories, _latest_parameters, _scenario_by_kind, plan_vs_actual  # noqa: F401 (re-exported)
 from nvplan.config import DATA_DIR
 from nvplan.db.models import (
     Actual,
@@ -43,10 +51,7 @@ from nvplan.db.models import (
     Category,
     ExternalNote,
     NoteSource,
-    Parameter,
     PlanValue,
-    Scenario,
-    ScenarioKind,
     Touchpoint,
 )
 
@@ -87,6 +92,13 @@ def _err(msg: str) -> str:
     return _dumps({"error": msg})
 
 
+def _dumps_rows(meta: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    """JSON with one compact row per line (line-addressable after eviction, see module doc)."""
+    head = ", ".join(f"{json.dumps(k)}: {json.dumps(v, ensure_ascii=False, default=str)}" for k, v in meta.items())
+    body = ",\n".join(" " + json.dumps(r, ensure_ascii=False, default=str) for r in rows)
+    return "{" + head + (", " if head else "") + '"rows": [\n' + body + "\n]}"
+
+
 def load_env_framework() -> dict[str, Any]:
     with ENV_FRAMEWORK_PATH.open() as fh:
         return yaml.safe_load(fh)
@@ -97,28 +109,8 @@ def load_control_table() -> dict[str, Any]:
         return yaml.safe_load(fh)
 
 
-def _categories(session: Session) -> dict[int, Category]:
-    return {c.id: c for c in session.scalars(select(Category)).all()}
-
-
 def _category_by_code(session: Session, code: str) -> Category | None:
     return session.scalar(select(Category).where(Category.code == code.strip().upper()))
-
-
-def _scenario_by_kind(session: Session, kind: str) -> Scenario | None:
-    try:
-        sk = ScenarioKind(kind.strip().lower())
-    except ValueError:
-        return None
-    return session.scalars(select(Scenario).where(Scenario.kind == sk).order_by(Scenario.id.desc())).first()
-
-
-def _latest_parameters(session: Session) -> dict[int, Parameter]:
-    """Latest parameter row per category (highest id wins; rows are immutable/versioned)."""
-    latest: dict[int, Parameter] = {}
-    for p in session.scalars(select(Parameter).order_by(Parameter.id)).all():
-        latest[p.category_id] = p
-    return latest
 
 
 def _note_dict(n: ExternalNote, cats: dict[int, Category]) -> dict[str, Any]:
@@ -130,76 +122,6 @@ def _note_dict(n: ExternalNote, cats: dict[int, Category]) -> dict[str, Any]:
         "author": n.author,
         "source": n.source.value,
         "ai_record_id": n.ai_record_id,
-    }
-
-
-def plan_vs_actual(session: Session, scenario_kind: str, year: int) -> dict[str, Any]:
-    """Pure arithmetic: plan_value vs actual per (non-component) category for one scenario/year.
-
-    deviation = actual - plan; deviation_pct relative to plan. Parameters (alpha, beta,
-    R^2) are attached so the caller can split cost deviations into beta * revenue
-    deviation and residual.
-    """
-    scenario = _scenario_by_kind(session, scenario_kind)
-    if scenario is None:
-        return {"error": f"no scenario of kind {scenario_kind!r}"}
-    cats = _categories(session)
-    params = _latest_parameters(session)
-    plans = {
-        pv.category_id: pv
-        for pv in session.scalars(
-            select(PlanValue).where(PlanValue.scenario_id == scenario.id, PlanValue.year == year)
-        ).all()
-    }
-    actuals = {a.category_id: a for a in session.scalars(select(Actual).where(Actual.year == year)).all()}
-    rows: list[dict[str, Any]] = []
-    for cid, cat in sorted(cats.items(), key=lambda kv: kv[0]):
-        if cat.is_component or cid not in plans or cid not in actuals:
-            continue
-        plan = float(plans[cid].value)
-        actual = float(actuals[cid].value)
-        dev = actual - plan
-        p = params.get(cid)
-        rows.append(
-            {
-                "category_code": cat.code,
-                "name": cat.name,
-                "kind": cat.kind.value,
-                "plan": plan,
-                "actual": actual,
-                "deviation": dev,
-                "deviation_pct": (dev / plan * 100.0) if plan else None,
-                "plan_path": plans[cid].path.value,
-                "alpha": p.alpha if p else None,
-                "beta": p.beta if p else None,
-                "r_squared": p.r_squared if p else None,
-                "valorization_rate": p.valorization_rate if p else None,
-            }
-        )
-    rev = next((r for r in rows if r["kind"] == "revenue"), None)
-    rev_dev = rev["deviation"] if rev else None
-    for r in rows:
-        if r["kind"] == "cost" and r["beta"] is not None and rev_dev is not None:
-            r["revenue_driven_part"] = r["beta"] * rev_dev
-            r["residual"] = r["deviation"] - r["revenue_driven_part"]
-    costs = [r for r in rows if r["kind"] == "cost"]
-    totals = {
-        "revenue_plan": rev["plan"] if rev else None,
-        "revenue_actual": rev["actual"] if rev else None,
-        "cost_plan": sum(r["plan"] for r in costs),
-        "cost_actual": sum(r["actual"] for r in costs),
-    }
-    if rev:
-        totals["result_plan"] = rev["plan"] - totals["cost_plan"]
-        totals["result_actual"] = rev["actual"] - totals["cost_actual"]
-    return {
-        "scenario": scenario.kind.value,
-        "scenario_label": scenario.label,
-        "year": year,
-        "unit": "k EUR",
-        "deviation_sign": "actual - plan",
-        "rows": rows,
-        "totals": totals,
     }
 
 
@@ -225,7 +147,7 @@ def make_read_tools(session_factory: SessionFactory) -> list[BaseTool]:
                 {"category_code": cats[a.category_id].code, "year": a.year, "value": a.value, "source": a.source_label}
                 for a in s.scalars(stmt).all()
             ]
-        return _dumps({"unit": "k EUR", "rows": rows})
+        return _dumps_rows({"unit": "k EUR"}, rows)
 
     @tool
     def get_parameters() -> str:
@@ -300,7 +222,8 @@ def make_read_tools(session_factory: SessionFactory) -> list[BaseTool]:
     def get_plan_vs_actual(scenario_kind: str, year: int) -> str:
         """Plan vs actual per category for one scenario and year: plan, actual, deviation
         (actual - plan), deviation %, alpha/beta/R^2, and for costs the revenue-driven part
-        (beta * revenue deviation) and the residual. Pure arithmetic over the tables."""
+        (beta * revenue deviation) and the residual. Pure arithmetic over the tables; the
+        deviation explanation is checked against exactly these figures."""
         with session_factory() as s:
             return _dumps(plan_vs_actual(s, scenario_kind, year))
 

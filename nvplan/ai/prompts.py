@@ -106,6 +106,10 @@ Before you start, read your skill: read_file("/skills/deviation-explanation-meth
 It holds the beta-driven versus residual decomposition, the citation format and the fixed-part
 assumption to name. Follow it.
 
+Your figures are checked against the deterministic plan-vs-actual table: every category must
+appear once with its exact plan, actual and deviation (one decimal), and each explanation must
+quote its deviation figure; any mismatch rejects the whole explanation.
+
 {_ADVISORY_RULES}"""
 
 DEVIATION_EXPLANATION_USER = """\

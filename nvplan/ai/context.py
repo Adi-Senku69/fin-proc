@@ -9,9 +9,10 @@ What runs, in effect order (outermost first, as ``create_deep_agent`` compiles i
 2. ``FilesystemMiddleware`` (ours replaces the default by ``.name``) - read-only tools
    ``read_file``/``ls``/``grep`` and **tool-result eviction**: any tool result longer than
    ``tool_result_evict_tokens`` (x4 chars) is written to ``/large_tool_results/<tool_call_id>``
-   on the backend *at tool time* and the ``ToolMessage`` becomes a pointer + preview. The
-   model reads the file selectively with ``read_file(offset, limit)``. Filesystem tools are
-   never evicted (they are the way back).
+   on the backend *at tool time* and the ``ToolMessage`` becomes a pointer ("saved in the
+   filesystem at this path: ...") + head/tail preview. The model reads the file selectively
+   with ``read_file(offset, limit)`` (line-based; row-oriented tool results are printed one
+   row per line for that reason). Filesystem tools are never evicted (they are the way back).
 3. ``SubAgentMiddleware`` (advisor only).
 4. deepagents ``SummarizationMiddleware`` (ours replaces the default) - when system + messages
    + tool schemas exceed ``summarization_trigger_tokens`` (approximate count, never a model
@@ -20,18 +21,15 @@ What runs, in effect order (outermost first, as ``create_deep_agent`` compiles i
    backend, and the *request* becomes ``[summary HumanMessage, last K messages]``. State
    (``result["messages"]``) is left untouched; the event is kept in private state.
 5. ``PatchToolCallsMiddleware`` (deepagents default).
-6. ``ContextEditingMiddleware(ClearToolUsesEdit)`` (new entry, spliced after the core) -
-   request-only: above ``clear_tool_uses_trigger_tokens`` every ``ToolMessage`` except the
-   last ``clear_tool_uses_keep`` becomes ``"[cleared]"``. The two write tools are excluded so
-   the model always sees what it recorded (note ids, ai_record id, validation errors).
-7. ``ContextAuditMiddleware`` (nvplan.ai.audit; new entry) - sees the request after 4 and 6.
-8. ``AnthropicPromptCachingMiddleware`` (ours replaces the tail default) - cache breakpoints
+6. ``ContextAuditMiddleware`` (nvplan.ai.audit; new entry, spliced after the core) - sees the
+   request after 4.
+7. ``AnthropicPromptCachingMiddleware`` (ours replaces the tail default) - cache breakpoints
    on the system prompt and last tool; no-op for non-Anthropic models.
 
-Ordering caveat (deepagents): user middleware that does not replace a default slot is
-spliced *after* the core stack, so ``ContextEditingMiddleware`` runs inside
-``SummarizationMiddleware``. Summarization therefore counts the un-cleared history; clearing
-reduces what the model sees between the two thresholds, it does not delay summarization.
+Deliberately absent: ``ContextEditingMiddleware(ClearToolUsesEdit)``. Clearing blanks old
+tool results in the request; if a data-bearing result (actuals, parameters, plan-vs-actual,
+notes) is cleared the model may cite figures from memory. Eviction is safe because it moves
+the big result to a file and leaves a pointer, so the model can ``read_file`` it back.
 
 Backend: ``CompositeBackend(default=StateBackend(), routes={"/skills/": FilesystemBackend(
 root_dir=nvplan/ai/skills, virtual_mode=True)})``. Offloads (``/conversation_history/``,
@@ -54,9 +52,6 @@ SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 SKILLS_SOURCE = "/skills/"
 SKILL_NAMES: tuple[str, ...] = ("env-scan-54-positions", "revenue-proposal-method", "deviation-explanation-method")
 
-# Tools whose results are never cleared by ClearToolUsesEdit (the model must keep seeing
-# what it wrote and any validation error it has to fix).
-CLEAR_EXCLUDED_TOOLS: tuple[str, ...] = ("record_revenue_proposal", "record_external_note")
 READ_ONLY_FS_TOOLS: list[str] = ["read_file", "ls", "grep"]
 
 
@@ -67,8 +62,6 @@ class ContextPolicy:
 
     summarization_trigger_tokens: int = config.AI_CONTEXT_SUMMARIZE_AT
     summarization_keep_messages: int = config.AI_CONTEXT_SUMMARIZE_KEEP_MESSAGES
-    clear_tool_uses_trigger_tokens: int = config.AI_CONTEXT_CLEAR_TOOL_USES_AT
-    clear_tool_uses_keep: int = config.AI_CONTEXT_CLEAR_TOOL_USES_KEEP
     tool_result_evict_tokens: int = config.AI_CONTEXT_TOOL_RESULT_EVICT_TOKENS
     cache_ttl: str = config.AI_CONTEXT_CACHE_TTL
     summarization_model: BaseChatModel | None = None  # None -> the agent's own model
@@ -76,7 +69,7 @@ class ContextPolicy:
     def __post_init__(self) -> None:
         if self.cache_ttl not in ("5m", "1h"):
             raise ValueError(f"cache_ttl must be '5m' or '1h', got {self.cache_ttl!r}")
-        for name in ("summarization_trigger_tokens", "clear_tool_uses_trigger_tokens", "tool_result_evict_tokens"):
+        for name in ("summarization_trigger_tokens", "tool_result_evict_tokens"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
 
@@ -97,12 +90,11 @@ def make_backend(skills_dir: Path | None = None) -> Any:
 def build_context_middleware(policy: ContextPolicy | None, *, model: BaseChatModel, backend: Any) -> list[Any]:
     """The context stack for one agent, in the order handed to ``create_deep_agent``.
 
-    Filesystem, Summarization and PromptCaching replace deepagents' defaults by name;
-    ContextEditing is a new entry (see module doc for the compiled order).
+    Filesystem, Summarization and PromptCaching replace deepagents' defaults by name (see the
+    module doc for the compiled order and for why there is no tool-result clearing).
     """
     from deepagents.middleware.filesystem import FilesystemMiddleware
     from deepagents.middleware.summarization import SummarizationMiddleware
-    from langchain.agents.middleware import ClearToolUsesEdit, ContextEditingMiddleware
     from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
     from langchain_core.messages.utils import count_tokens_approximately
 
@@ -112,16 +104,6 @@ def build_context_middleware(policy: ContextPolicy | None, *, model: BaseChatMod
             backend=backend,
             tools=list(READ_ONLY_FS_TOOLS),
             tool_token_limit_before_evict=policy.tool_result_evict_tokens,
-        ),
-        ContextEditingMiddleware(
-            edits=[
-                ClearToolUsesEdit(
-                    trigger=policy.clear_tool_uses_trigger_tokens,
-                    keep=policy.clear_tool_uses_keep,
-                    exclude_tools=CLEAR_EXCLUDED_TOOLS,
-                )
-            ],
-            token_counter=count_tokens_approximately,
         ),
         SummarizationMiddleware(
             model=policy.summarization_model or model,

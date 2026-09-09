@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from nvplan.ai import ProposalRejected, run_deviation_explanation, run_env_scan, run_revenue_proposal
-from nvplan.ai.fake import scripted_deviation_model, scripted_env_scan_model, scripted_revenue_model
+from nvplan.ai import ExplanationRejected, ProposalRejected, plan_vs_actual, run_deviation_explanation, run_env_scan, run_revenue_proposal
+from nvplan.ai.fake import contributions_from_table, scripted_deviation_model, scripted_env_scan_model, scripted_revenue_model
+from nvplan.api.app import create_app
 from nvplan.ai.prompts import DEVIATION_EXPLANATION_SYSTEM, ENV_SCAN_SYSTEM, REVENUE_PROPOSAL_SYSTEM
 from nvplan.db.models import Actual, AiRecord, AiStatus, Category, ExternalNote, NoteSource, Touchpoint
 from test_ai_fixtures import PLAN_YEAR, ai_db  # noqa: F401 (fixture)
@@ -162,35 +166,32 @@ def test_env_scan_persists_record_and_linked_notes(ai_db):
 # --------------------------------------------------------------------------- deviation explanation
 
 
+def _table(factory, year: int = PLAN_YEAR) -> dict:
+    with factory() as s:
+        return plan_vs_actual(s, "base", year)
+
+
+def _record_count(factory) -> int:
+    with factory() as s:
+        return len(s.scalars(select(AiRecord)).all())
+
+
 def test_deviation_explanation_cites_figures(ai_db):
+    """(a) a scripted run whose figures come from the deterministic table is persisted."""
     factory, plans = ai_db
+    table = _table(factory)
+    rows = {r["category_code"]: r for r in table["rows"]}
+    assert set(rows) == {"REV", "MAT", "EXT", "PERS", "OTH"} and rows["REV"]["plan"] == plans["REV"]
+    contributions = contributions_from_table(table)
     with factory() as s:
         rev = s.scalar(select(Category).where(Category.code == "REV"))
-        pers = s.scalar(select(Category).where(Category.code == "PERS"))
         actual_rev = s.scalar(select(Actual.value).where(Actual.category_id == rev.id, Actual.year == PLAN_YEAR))
-        actual_pers = s.scalar(select(Actual.value).where(Actual.category_id == pers.id, Actual.year == PLAN_YEAR))
-    plan_rev, plan_pers = plans["REV"], plans["PERS"]
-    dev_rev, dev_pers = actual_rev - plan_rev, actual_pers - plan_pers
-
+    plan_rev, dev_rev = plans["REV"], actual_rev - plans["REV"]
     summary = (
-        f"Revenue came in at {actual_rev:.1f} vs plan {plan_rev:.1f} ({dev_rev:+.1f}); personnel {actual_pers:.1f} vs "
-        f"{plan_pers:.1f} ({dev_pers:+.1f}), of which beta 0.1 * {dev_rev:+.1f} = {0.1 * dev_rev:+.1f} is revenue-driven."
+        f"Revenue came in at {actual_rev:.1f} vs plan {plan_rev:.1f} ({dev_rev:+.1f}); cost lines split into beta 0.1 * "
+        f"{dev_rev:+.1f} = {0.1 * dev_rev:+.1f} revenue-driven and a residual on the fixed part."
     )
-    model = scripted_deviation_model(
-        scenario_kind="base",
-        year=PLAN_YEAR,
-        summary=summary,
-        contributions=[
-            {"category_code": "REV", "plan": plan_rev, "actual": actual_rev, "deviation": dev_rev, "explanation": "volume above plan"},
-            {
-                "category_code": "PERS",
-                "plan": plan_pers,
-                "actual": actual_pers,
-                "deviation": dev_pers,
-                "explanation": f"beta 0.1 * {dev_rev:+.1f} = {0.1 * dev_rev:+.1f}; residual {dev_pers - 0.1 * dev_rev:+.1f}",
-            },
-        ],
-    )
+    model = scripted_deviation_model(scenario_kind="base", year=PLAN_YEAR, summary=summary, contributions=contributions)
 
     rec = run_deviation_explanation(factory, scenario_kind="base", year=PLAN_YEAR, model=model)
 
@@ -201,11 +202,122 @@ def test_deviation_explanation_cites_figures(ai_db):
         assert r.proposed_value is None
         assert r.year == PLAN_YEAR and r.scenario_id is not None
         assert DEVIATION_EXPLANATION_SYSTEM in r.prompt_text
+        assert "checked against the deterministic plan-vs-actual table" in r.prompt_text
         # the user prompt carried the arithmetic table
         assert f"plan {plan_rev:,.1f}, actual {actual_rev:,.1f}" in r.prompt_text
-        # the stored response cites plan and actual figures
-        assert f"{plan_rev:.1f}" in r.response_text
-        assert f"{actual_rev:.1f}" in r.response_text
-        assert f"{plan_pers:.1f}" in r.response_text
-        assert f"{actual_pers:.1f}" in r.response_text
+        # the stored response carries plan/actual/deviation of every category: verbatim in the
+        # structured JSON, to one decimal in the prose of each contribution
+        for row in table["rows"]:
+            assert f'"plan": {json.dumps(row["plan"])}' in r.response_text
+            assert f'"actual": {json.dumps(row["actual"])}' in r.response_text
+            assert f"actual {row['actual']:,.1f} vs plan {row['plan']:,.1f}, {row['deviation']:+,.1f}" in r.response_text
         assert r.rationale == summary
+    assert _record_count(factory) == 1
+
+
+def test_deviation_explanation_fake_fills_from_tool_result(ai_db):
+    """contributions=[] (as the API/guardrail tests script it) -> figures copied from get_plan_vs_actual."""
+    factory, _ = ai_db
+    rec = run_deviation_explanation(
+        factory, scenario_kind="base", year=PLAN_YEAR,
+        model=scripted_deviation_model(scenario_kind="base", year=PLAN_YEAR, summary="filled", contributions=[]),
+    )
+    with factory() as s:
+        text = s.get(AiRecord, rec.id).response_text
+    for row in _table(factory)["rows"]:
+        assert f'"category_code": "{row["category_code"]}"' in text and f"{row['deviation']:+,.1f}" in text
+
+
+def test_deviation_explanation_wrong_plan_is_rejected_and_nothing_persisted(ai_db):
+    """(b) PERS.plan off by 100 -> ExplanationRejected naming model vs deterministic value; no ai_record."""
+    factory, _ = ai_db
+    table = _table(factory)
+    contributions = contributions_from_table(table)
+    pers = next(c for c in contributions if c["category_code"] == "PERS")
+    pers["plan"] += 100.0
+    det_plan = next(r for r in table["rows"] if r["category_code"] == "PERS")["plan"]
+    before = _record_count(factory)
+    model = scripted_deviation_model(scenario_kind="base", year=PLAN_YEAR, summary="off", contributions=contributions)
+    with pytest.raises(ExplanationRejected) as ei:
+        run_deviation_explanation(factory, scenario_kind="base", year=PLAN_YEAR, model=model)
+    msg = str(ei.value)
+    assert "PERS.plan" in msg and f"model {pers['plan']:.1f}" in msg and f"deterministic {det_plan:.1f}" in msg
+    assert "REV" not in msg.split("PERS.plan")[0]  # only the offending field is listed
+    assert isinstance(ei.value, ValueError)
+    assert _record_count(factory) == before
+
+
+def test_deviation_explanation_within_rounding_tolerance_is_accepted(ai_db):
+    """0.04 k EUR off (same figure to one decimal) passes; 0.06 does not."""
+    factory, _ = ai_db
+    table = _table(factory)
+    ok = contributions_from_table(table)
+    ok[0]["actual"] += 0.04
+    run_deviation_explanation(
+        factory, scenario_kind="base", year=PLAN_YEAR,
+        model=scripted_deviation_model(scenario_kind="base", year=PLAN_YEAR, summary="ok", contributions=ok),
+    )
+    bad = contributions_from_table(table)
+    bad[0]["actual"] += 0.06
+    with pytest.raises(ExplanationRejected, match=f"{bad[0]['category_code']}.actual"):
+        run_deviation_explanation(
+            factory, scenario_kind="base", year=PLAN_YEAR,
+            model=scripted_deviation_model(scenario_kind="base", year=PLAN_YEAR, summary="bad", contributions=bad),
+        )
+    assert _record_count(factory) == 1
+
+
+def test_deviation_explanation_missing_category_is_rejected(ai_db):
+    """(c) no OTH contribution -> rejected, nothing persisted."""
+    factory, _ = ai_db
+    contributions = [c for c in contributions_from_table(_table(factory)) if c["category_code"] != "OTH"]
+    assert len(contributions) == 4
+    model = scripted_deviation_model(scenario_kind="base", year=PLAN_YEAR, summary="no OTH", contributions=contributions)
+    with pytest.raises(ExplanationRejected, match=r"missing contributions for \['OTH'\]"):
+        run_deviation_explanation(factory, scenario_kind="base", year=PLAN_YEAR, model=model)
+    assert _record_count(factory) == 0
+
+    # an unknown category is rejected too
+    contributions = contributions_from_table(_table(factory))
+    contributions[0]["category_code"] = "DEPR"
+    model = scripted_deviation_model(scenario_kind="base", year=PLAN_YEAR, summary="DEPR", contributions=contributions)
+    with pytest.raises(ExplanationRejected, match="DEPR: not in the deterministic table"):
+        run_deviation_explanation(factory, scenario_kind="base", year=PLAN_YEAR, model=model)
+    assert _record_count(factory) == 0
+
+
+def test_deviation_explanation_text_must_cite_deviation_figure(ai_db):
+    """(d) right numbers in the fields, but the prose omits the deviation figure -> rejected."""
+    factory, _ = ai_db
+    table = _table(factory)
+    contributions = contributions_from_table(table)
+    mat = next(c for c in contributions if c["category_code"] == "MAT")
+    mat["explanation"] = "material costs moved with volume; nothing unusual"
+    model = scripted_deviation_model(scenario_kind="base", year=PLAN_YEAR, summary="no figure", contributions=contributions)
+    with pytest.raises(ExplanationRejected, match="MAT.explanation: does not cite its deviation"):
+        run_deviation_explanation(factory, scenario_kind="base", year=PLAN_YEAR, model=model)
+    assert _record_count(factory) == 0
+
+    # formatting is tolerated: thousands separator with a space, no plus sign on a positive figure
+    dev = next(r for r in table["rows"] if r["category_code"] == "MAT")["deviation"]
+    spaced = f"{abs(dev):,.1f}".replace(",", " ")
+    mat["explanation"] = f"MAT deviation {'-' if dev < 0 else ''}{spaced} k EUR, volume-driven"
+    model = scripted_deviation_model(scenario_kind="base", year=PLAN_YEAR, summary="spaced", contributions=contributions)
+    run_deviation_explanation(factory, scenario_kind="base", year=PLAN_YEAR, model=model)
+    assert _record_count(factory) == 1
+
+
+def test_deviation_explanation_api_returns_422_on_mismatch(ai_db):
+    """(e) the API maps ExplanationRejected to 422 and stores nothing."""
+    factory, _ = ai_db
+    contributions = contributions_from_table(_table(factory))
+    next(c for c in contributions if c["category_code"] == "PERS")["plan"] += 100.0
+    app = create_app(session_factory=factory)
+    app.state.model_factory = lambda tp, ctx: scripted_deviation_model(
+        scenario_kind=ctx["scenario_kind"], year=ctx["year"], summary="api", contributions=contributions
+    )
+    with TestClient(app) as client:
+        r = client.post("/ai/deviation-explanation", json={"scenario_kind": "base", "year": PLAN_YEAR})
+        assert r.status_code == 422, r.text
+        assert "PERS.plan" in r.json()["detail"]
+        assert client.get("/ai/records").json() == []

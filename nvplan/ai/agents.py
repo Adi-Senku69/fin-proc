@@ -11,8 +11,8 @@ Design
   (``read_file``/``ls``/``grep``) so no agent ever carries a tool named
   write_*/edit_*/delete.
 * Every agent gets the context stack from ``nvplan.ai.context`` (tool-result
-  eviction, tool-use clearing, summarization with history offload, prompt
-  caching; thresholds from a ``ContextPolicy``, default from ``config``) plus
+  eviction, summarization with history offload, prompt caching - no clearing;
+  thresholds from a ``ContextPolicy``, default from ``config``) plus
   ``nvplan.ai.audit.ContextAuditMiddleware`` which logs every model call into
   ``AiRunContext.call_log``; the entrypoints persist that as
   ``ai_record.call_log_json``. Files the middleware writes live in graph state
@@ -36,6 +36,12 @@ the error and retry) and the entrypoint finalises that same row. If the model
 returned a structured proposal without calling the tool, the entrypoint puts it
 through the same validator/inserter (``tools.record_proposal``) and raises
 ``ProposalRejected`` on failure. One run == at most one ai_record.
+
+Deviation-explanation persistence: the structured ``DeviationExplanation`` is
+cross-checked against the deterministic plan-vs-actual table
+(``figures.check_explanation``: every category once, plan/actual/deviation within
+0.05 k EUR, the deviation figure quoted in each explanation) *before* anything is
+written; a mismatch raises ``ExplanationRejected`` and no ai_record exists.
 """
 
 from __future__ import annotations
@@ -54,6 +60,7 @@ from nvplan import config
 from nvplan.ai import prompts
 from nvplan.ai.audit import ContextAuditMiddleware
 from nvplan.ai.context import SKILLS_SOURCE, ContextPolicy, build_context_middleware, make_backend
+from nvplan.ai.figures import ExplanationRejected, check_explanation, plan_vs_actual
 from nvplan.ai.schemas import TOUCHPOINT_SCHEMAS, DeviationExplanation, EnvScanResult, RevenueProposal
 from nvplan.ai.tools import (
     AiRunContext,
@@ -64,7 +71,6 @@ from nvplan.ai.tools import (
     load_env_framework,
     make_read_tools,
     make_write_tools,
-    plan_vs_actual,
     record_proposal,
 )
 from nvplan.db.models import Actual, AiRecord, AiStatus, Category, ExternalNote, Touchpoint
@@ -101,6 +107,9 @@ _SUBAGENT_DESCRIPTIONS: dict[str, str] = {
 
 class ProposalRejected(ValueError):
     """The structured revenue proposal broke a control-table rule; nothing was written."""
+
+
+__all__ = ["ExplanationRejected", "ProposalRejected"]  # ExplanationRejected lives in nvplan.ai.figures
 
 
 # --------------------------------------------------------------------------- model
@@ -180,8 +189,8 @@ def _response_text(messages: Sequence[BaseMessage], structured: Any) -> str:
 
 
 def _agent_middleware(policy: ContextPolicy | None, *, model: BaseChatModel, backend: Any, ctx: AiRunContext) -> list[Any]:
-    """Context stack (read-only filesystem, clearing, summarization, caching) + the audit, in
-    that order: the audit is last so it sees the request after summarization/clearing."""
+    """Context stack (read-only filesystem with eviction, summarization, caching) + the audit,
+    in that order: the audit is last so it sees the request after summarization."""
     return [*build_context_middleware(policy, model=model, backend=backend), ContextAuditMiddleware(ctx)]
 
 
@@ -501,7 +510,11 @@ def run_deviation_explanation(
     model: str | BaseChatModel | None = None,
     policy: ContextPolicy | None = None,
 ) -> AiRecord:
-    """Touchpoint 3. Persists the explanation as an ai_record (no proposed value)."""
+    """Touchpoint 3. Persists the explanation as an ai_record (no proposed value).
+
+    The structured result is cross-checked against the deterministic plan-vs-actual table
+    first (``figures.check_explanation``); on any mismatch ``ExplanationRejected`` is raised
+    and nothing is persisted."""
     chat = get_model(model)
     with session_factory() as s:
         scenario = _scenario_by_kind(s, scenario_kind)
@@ -518,6 +531,12 @@ def run_deviation_explanation(
     agent = build_touchpoint_agent("deviation_explanation", model=chat, session_factory=session_factory, extra_context=ctx, policy=policy)
     result, capture = _invoke(agent, user_prompt)
     explanation: DeviationExplanation = result["structured_response"]
+
+    # "Deviation calculated deterministically, explained by AI": the model's figures must be
+    # the table's figures. Recomputed here (same code path as get_plan_vs_actual), and nothing
+    # is written when the check fails.
+    with session_factory() as s:
+        check_explanation(explanation, plan_vs_actual(s, scenario_kind, year))
 
     with session_factory() as s:
         rec = AiRecord(

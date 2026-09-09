@@ -11,7 +11,7 @@ system_prompt=..., response_format=..., subagents=[...], middleware=[...], backe
 |---|---|---|---|---|
 | 1. Environmental scan of the 54-position framework | `run_env_scan(session_factory, model=, positions_subset=)` | actuals, notes, framework, parameters | `external_note` rows (`source=ai_scan`, linked via `external_note.ai_record_id`) + one `ai_record` | `EnvScanResult` |
 | 2. Revenue proposal with rationale, only on a flagged external factor | `run_revenue_proposal(session_factory, scenario_kind=, year=, default_value=, model=)` | revenue actuals, notes, control table, plan values, parameters | one `ai_record` (`touchpoint=revenue_proposal`, `status=proposed`, `proposed_value`) | `RevenueProposal` |
-| 3. Deviation explanation citing the contributing figures | `run_deviation_explanation(session_factory, scenario_kind=, year=, model=)` | `get_plan_vs_actual` (pure arithmetic incl. alpha/beta split) | one `ai_record` | `DeviationExplanation` |
+| 3. Deviation explanation citing the contributing figures | `run_deviation_explanation(session_factory, scenario_kind=, year=, model=)` | `get_plan_vs_actual` (pure arithmetic incl. alpha/beta split) | one `ai_record`, only after the numeric cross-check (see "Deviation cross-check") | `DeviationExplanation` |
 
 `build_advisor(model, session_factory)` wraps the three as deepagents subagents
 (`env-scan`, `revenue-proposal`, `deviation-explanation`) behind one agent for free-form
@@ -37,6 +37,18 @@ questions.
   `ChatAnthropic.model` (or `"fake"` in tests). Because the context middleware can rewrite
   what later calls see, `ai_record.call_log_json` additionally stores every model call of the
   run verbatim (see "Context management: the audit trail").
+* **Deviation calculated deterministically, explained by AI** — `figures.plan_vs_actual` is the
+  one code path behind both the `get_plan_vs_actual` tool and the cross-check
+  `figures.check_explanation` that `run_deviation_explanation` applies to the structured
+  result before writing anything: every category of the table exactly once, `plan`/`actual`/
+  `deviation` within 0.05 k EUR of the deterministic value (i.e. equal to one decimal), and
+  each contribution's `explanation` text quoting its deviation to one decimal (thousands
+  separators and `+`/no sign tolerated, e.g. `-245.7`, `-1,245.7`, `-1 245.7`, `+32.9`/`32.9`).
+  Any mismatch raises `ExplanationRejected` (a `ValueError`; HTTP 422) listing the offending
+  fields with model vs deterministic values, and no `ai_record` exists. The rule is stated in
+  the system prompt and in the deviation SKILL.md. `tests/test_ai_touchpoints.py` covers the
+  wrong figure, the missing category, the prose without the figure, the tolerance edge and
+  the 422.
 * **Confirmation gate is elsewhere** — every record is written with `status=proposed`; this
   package never changes status (`services/gate.py` does).
 
@@ -62,7 +74,10 @@ print(rec.id, rec.proposed_value, rec.rationale)
 `model=None` resolves to `ChatAnthropic(model=config.AI_MODEL)` (`claude-opus-5`); pass a model
 name string or any `BaseChatModel` to override. Tests use `nvplan.ai.fake.FakeToolCallingModel`
 (a `FakeMessagesListChatModel` with a no-op `bind_tools`) and one scripted scenario per
-touchpoint, so they run without network or key.
+touchpoint, so they run without network or key. The deviation script
+(`fake.ScriptedDeviationModel`) fills its contributions from the deterministic table it was
+shown (the `get_plan_vs_actual` tool result, or a `table=` handed in) unless a test scripts
+them explicitly to provoke a rejection.
 
 Note: deepagents auto-adds a `general-purpose` subagent (`task` tool) to every agent; it
 inherits the same tool set, so it cannot write anything the touchpoint itself cannot.
@@ -95,14 +110,14 @@ maps to `nvplan/ai/skills/x/SKILL.md` on disk; everything else (`/large_tool_res
 
 ## Context management (`nvplan/ai/context.py`, `nvplan/ai/audit.py`)
 
-`ContextPolicy` (frozen dataclass; defaults from `config.AI_CONTEXT_*`) drives four middleware
+`ContextPolicy` (frozen dataclass; defaults from `config.AI_CONTEXT_*`) drives three middleware
 that `build_context_middleware(policy, model=, backend=)` returns and every agent installs.
 Compiled order (printed with `context.middleware_names(agent)`, asserted in
 `tests/test_ai_context.py::test_middleware_order_audit_after_context`):
 
 ```
 SkillsMiddleware > FilesystemMiddleware > SubAgentMiddleware > SummarizationMiddleware
-  > ContextEditingMiddleware > ContextAuditMiddleware > AnthropicPromptCachingMiddleware
+  > ContextAuditMiddleware > AnthropicPromptCachingMiddleware
 ```
 
 (first = outermost for `wrap_model_call`; `PatchToolCallsMiddleware` is `before_agent`-only.)
@@ -110,40 +125,49 @@ SkillsMiddleware > FilesystemMiddleware > SubAgentMiddleware > SummarizationMidd
 | what | fires when | default | tunable |
 |---|---|---|---|
 | **Tool-result eviction** (`FilesystemMiddleware`, at tool time) | a tool result longer than `tool_result_evict_tokens` x 4 chars | 4 000 tokens (the 54-position framework is ~1 500, the full actuals ~1 300, so nothing evicts by default) | `tool_result_evict_tokens` |
-| **Clear old tool results** (`ContextEditingMiddleware(ClearToolUsesEdit)`, request-only) | approx. tokens of the messages > `clear_tool_uses_trigger_tokens` | 60 000; keeps the last 3 tool results; `record_revenue_proposal` / `record_external_note` results are never cleared | `clear_tool_uses_trigger_tokens`, `clear_tool_uses_keep` |
 | **Summarization + offload** (deepagents `SummarizationMiddleware`, request-only) | approx. tokens of system + messages + tool schemas > `summarization_trigger_tokens` | 120 000; keeps the last 6 messages verbatim, older ones are summarized by `summarization_model` (default: the agent's model) and written in full to `/conversation_history/session_<id>.md` in state | `summarization_trigger_tokens`, `summarization_keep_messages`, `summarization_model` |
 | **Prompt caching** (`AnthropicPromptCachingMiddleware`) | every call on a `ChatAnthropic` model; no-op otherwise | `ttl="5m"` | `cache_ttl` (`"5m"` or `"1h"`) |
 
-Evicted results are replaced by a pointer + preview ("Tool result too large ... saved ... at
-`/large_tool_results/<tool_call_id>`"); the model pages through the file with
-`read_file(offset, limit)` (filesystem tools themselves are never evicted). `get_env_framework`
-is pretty-printed for exactly that reason (line-addressable). Token counts are
+Evicted results are replaced by a pointer + preview ("Tool result too large, the result of this
+tool call `<id>` was saved in the filesystem at this path: `/large_tool_results/<id>` ... use
+the read_file tool ... offset and limit"); the model pages through the file with
+`read_file(offset, limit)` (filesystem tools themselves are never evicted; a `read_file` page is
+capped at the same `tool_result_evict_tokens` x 4 chars). Line-based paging is why
+`get_env_framework` is pretty-printed and `get_actuals` prints one row per line
+(`tests/test_ai_context.py::test_evicted_actuals_are_readable_row_by_row`: evicted, then a
+scripted `read_file(offset, limit)` returns the ten PERS rows incl. 2025). Token counts are
 `count_tokens_approximately` (chars/4 + 3 per message), never a model call - fakes and
 `claude-opus-5` (no profile in langchain-anthropic 1.7.1) both work; that is why the trigger is
 `("tokens", N)` and not a fraction of the context window. `result["messages"]` always keeps
 the raw history; only the request is rewritten.
 
+**Eviction only, no clearing (decision).** `ContextEditingMiddleware(ClearToolUsesEdit)` was
+tried and removed. Clearing replaces old tool results in the request with `[cleared]`; once a
+data-bearing result (actuals, parameters, plan-vs-actual, notes) is blanked the model can only
+cite those figures from memory, which is exactly what this layer must not do. Eviction keeps
+the data retrievable: the big result moves to a file, the pointer stays in the conversation,
+and the model reads it back with `read_file`. Summarization is kept because its offload is
+also retrievable (`/conversation_history/`) and the summary names the file.
+`tests/test_ai_context.py::test_no_tool_result_is_ever_cleared` pins this down.
+
 Tuning: pass `policy=ContextPolicy(...)` to `run_*`, `build_touchpoint_agent` or
 `build_advisor`; `None` means `DEFAULT_POLICY` (config). Give the summarizer a cheaper model
-via `summarization_model=` if the runs get long. Ordering caveat: deepagents splices user
-middleware that does not replace a default slot *after* its core stack, so clearing runs
-inside summarization - it reduces what the model sees between 60k and 120k, it does not delay
-the 120k summarization (which counts the raw history).
+via `summarization_model=` if the runs get long.
 
 ### The audit trail
 
-`ContextAuditMiddleware` (last in the list, so it sees the request after summarization and
-clearing) appends one dict per model call to `AiRunContext.call_log`:
+`ContextAuditMiddleware` (last in the list, so it sees the request after summarization)
+appends one dict per model call to `AiRunContext.call_log`:
 
-`call_index, timestamp, n_messages, approx_tokens, summarized, cleared_tool_results,
-evicted_tool_results, tools_offered, system_prompt_chars, request{system, messages[{role,
-content_excerpt (2 000 chars), tool_calls, tool_name, cleared, evicted, summary}]},
-response{stop, text_excerpt, tool_calls, usage}`.
+`call_index, timestamp, n_messages, approx_tokens, summarized, evicted_tool_results,
+tools_offered, system_prompt_chars, request{system, messages[{role, content_excerpt (2 000
+chars), tool_calls, tool_name, evicted, summary}]}, response{stop, text_excerpt, tool_calls,
+usage}`.
 
 `summarized` is detected by the summary `HumanMessage` deepagents inserts
 (`additional_kwargs["lc_source"] == "summarization"`), with a fallback comparing the request's
-first message to the state's first message; `cleared_tool_results` counts `"[cleared]"`
-placeholders; `evicted_tool_results` counts pointers to `/large_tool_results/`. All three
+first message to the state's first message; `evicted_tool_results` counts pointers to
+`/large_tool_results/`. All three
 entrypoints persist the log as `ai_record.call_log_json`; `GET /ai/records/{id}` returns it as
 `call_log` (the list endpoint stays light). Together with `prompt_text` this is the "literal
 prompt used at any AI step" - per step.

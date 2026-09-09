@@ -6,7 +6,12 @@
 and cycle when exhausted, so every scripted run ends with the structured-output
 tool call, which terminates the agent loop.
 
-One scripted scenario per touchpoint keeps the tests deterministic. Every
+One scripted scenario per touchpoint keeps the tests deterministic. The deviation
+script (``ScriptedDeviationModel``) fills its contributions from the deterministic
+plan-vs-actual table (the ``get_plan_vs_actual`` result it was given, or a table
+passed in) unless the test scripts them explicitly, so the numeric cross-check in
+``run_deviation_explanation`` passes by construction and tests can break one figure
+on purpose. Every
 script starts with a ``read_file`` of the touchpoint's skill
 (``/skills/<name>/SKILL.md``), which proves the skills route of the composite
 backend resolves; the tests assert the skill text came back in the ToolMessage.
@@ -16,10 +21,12 @@ backend resolves; the tests assert the skill text came back in the ToolMessage.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration
 
 from nvplan.ai.schemas import DeviationExplanation, EnvScanResult, RevenueProposal
 
@@ -172,19 +179,98 @@ def scripted_revenue_model(
     )
 
 
+def contributions_from_table(table: dict[str, Any]) -> list[dict[str, Any]]:
+    """Correct ``Contribution`` dicts for every row of a ``plan_vs_actual`` table.
+
+    The figures are copied from the deterministic table (never typed by hand) and every
+    explanation quotes its deviation to one decimal, so the result passes
+    ``figures.check_explanation``; tests perturb a copy to provoke a rejection.
+    """
+    rev = next((r for r in table.get("rows", []) if r.get("kind") == "revenue"), None)
+    out: list[dict[str, Any]] = []
+    for r in table.get("rows", []):
+        expl = f"{r['category_code']} actual {r['actual']:,.1f} vs plan {r['plan']:,.1f}, {r['deviation']:+,.1f}"
+        if r.get("deviation_pct") is not None:
+            expl += f" ({r['deviation_pct']:+.1f}%)"
+        if "revenue_driven_part" in r and rev is not None:
+            expl += (
+                f"; beta {r['beta']:.4f} * revenue deviation {rev['deviation']:+,.1f} = "
+                f"{r['revenue_driven_part']:+,.1f} revenue-driven; residual {r['residual']:+,.1f}"
+            )
+        out.append(
+            {
+                "category_code": r["category_code"],
+                "plan": r["plan"],
+                "actual": r["actual"],
+                "deviation": r["deviation"],
+                "explanation": expl,
+            }
+        )
+    return out
+
+
+def _table_from_messages(messages: list[Any]) -> dict[str, Any] | None:
+    """The most recent ``get_plan_vs_actual`` ToolMessage in the request, parsed."""
+    for m in reversed(messages):
+        if getattr(m, "type", None) != "tool" or getattr(m, "name", None) != "get_plan_vs_actual":
+            continue
+        content = m.content if isinstance(m.content, str) else "".join(
+            b.get("text", "") if isinstance(b, dict) else str(b) for b in m.content
+        )
+        try:
+            data = json.loads(content)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and "rows" in data:
+            return data
+    return None
+
+
+class ScriptedDeviationModel(FakeToolCallingModel):
+    """Scripted deviation model whose final turn sources its figures from the deterministic table.
+
+    When the scripted ``DeviationExplanation`` has no contributions, they are filled at the
+    structured turn from ``table`` (a ``plan_vs_actual`` result handed in by the test) or,
+    failing that, from the ``get_plan_vs_actual`` ToolMessage in the request - i.e. the
+    fake cites exactly what the tool returned, like a well-behaved model. Explicit
+    contributions are passed through untouched (so tests can script a wrong figure).
+    """
+
+    table: dict[str, Any] | None = None
+
+    def _generate(self, messages: list[Any], stop: Any = None, run_manager: Any = None, **kwargs: Any) -> Any:
+        result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        msg = result.generations[0].message
+        calls = list(getattr(msg, "tool_calls", None) or [])
+        if len(calls) == 1 and calls[0]["name"] == "DeviationExplanation" and not calls[0]["args"].get("contributions"):
+            table = self.table or _table_from_messages(messages)
+            if table is not None:
+                args = {**calls[0]["args"], "contributions": contributions_from_table(table)}
+                filled = AIMessage(content=msg.content, tool_calls=[{**calls[0], "args": args}])
+                result.generations[0] = ChatGeneration(message=filled)
+        return result
+
+
 def scripted_deviation_model(
     *,
     scenario_kind: str,
     year: int,
     summary: str,
-    contributions: list[dict[str, Any]],
-) -> FakeToolCallingModel:
-    """Reads plan vs actual once, then returns DeviationExplanation."""
-    explanation = DeviationExplanation(scenario=scenario_kind, year=year, summary=summary, contributions=contributions)
-    return FakeToolCallingModel(
+    contributions: list[dict[str, Any]] | None = None,
+    table: dict[str, Any] | None = None,
+) -> ScriptedDeviationModel:
+    """Reads plan vs actual once, then returns DeviationExplanation.
+
+    ``contributions=None``/``[]``: filled from the deterministic table at the structured turn
+    (see ``ScriptedDeviationModel``); pass ``table`` when the tool result may no longer be in
+    the request (summarization). Explicit contributions are used verbatim.
+    """
+    explanation = DeviationExplanation(scenario=scenario_kind, year=year, summary=summary, contributions=contributions or [])
+    return ScriptedDeviationModel(
         responses=[
             read_skill("deviation_explanation"),
             ai_calls(tool_call("get_plan_vs_actual", {"scenario_kind": scenario_kind, "year": year}, "pva")),
             structured("DeviationExplanation", explanation.model_dump(), content=summary),
-        ]
+        ],
+        table=table,
     )

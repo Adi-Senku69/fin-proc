@@ -8,7 +8,7 @@ tests inject scripted fakes). When it is ``None`` the real model
 (``nvplan.ai.get_model`` -> ``ChatAnthropic(config.AI_MODEL)``) is used, which needs
 ``ANTHROPIC_API_KEY``; without either the AI routes answer 503.
 
-Error mapping: LookupError -> 404, GateError -> 409, ProposalRejected -> 422,
+Error mapping: LookupError -> 404, GateError -> 409, ProposalRejected / ExplanationRejected -> 422,
 ValueError -> 400.
 """
 
@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from nvplan import config
-from nvplan.ai import ProposalRejected, run_deviation_explanation, run_env_scan, run_revenue_proposal
+from nvplan.ai import ExplanationRejected, ProposalRejected, run_deviation_explanation, run_env_scan, run_revenue_proposal
 from nvplan.api import queries as q
 from nvplan.api import schemas as S
 from nvplan.db.models import AiRecord
@@ -115,6 +115,10 @@ def _register(app: FastAPI) -> None:
 
     @app.exception_handler(ProposalRejected)
     async def _rejected(_r, exc):  # noqa: ANN001
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    @app.exception_handler(ExplanationRejected)
+    async def _explanation_rejected(_r, exc):  # noqa: ANN001
         return JSONResponse(status_code=422, content={"detail": str(exc)})
 
     @app.exception_handler(ValueError)
