@@ -1,0 +1,1 @@
+"""Illustrative (dummy) data generation."""

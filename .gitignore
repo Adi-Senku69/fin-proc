@@ -1,0 +1,21 @@
+# virtual environments
+.venv/
+venv/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# local databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
