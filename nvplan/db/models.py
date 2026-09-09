@@ -245,6 +245,8 @@ class ExternalNote(Base):
     author: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     source: Mapped[NoteSource] = mapped_column(Enum(NoteSource), nullable=False, default=NoteSource.manual)
+    # Set for source=ai_scan: the ai_record (env scan run) that produced this note.
+    ai_record_id: Mapped[int | None] = mapped_column(ForeignKey("ai_record.id"), nullable=True)
 
     category: Mapped[Category | None] = relationship()
 
