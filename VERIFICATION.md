@@ -108,8 +108,35 @@ field by field against the deterministic plan-vs-actual table before it is store
 
 ## 8. Follow-ups recommended before the Newvision pilot
 
-1. Add a guard for the valorization rate when the fitted fixed part is near zero (5.2).
-2. Offer a joint α/v/β estimator as a selectable method, recorded in the derivation (5.1).
+1. ~~Add a guard for the valorization rate when the fitted fixed part is near zero (5.2).~~ **Done
+   2026-09-19.** A near-zero intercept or a sign-changing fixed part now reports the rate as undefined,
+   falls back to 0 for projection, and records the reason in the derivation so the trace shows it.
+   Verified on the real case: External services 2019–2023 fits α = 9.985 k€, is flagged
+   `degenerate_intercept`, and its raw −305% rate is suppressed rather than displayed.
+2. ~~Offer a joint α/v/β estimator as a selectable method (5.1).~~ **Done 2026-09-19, with a warning
+   that changes the recommendation below.**
+
+### 5.4 The joint estimator is unusable on a five-year window — measured
+
+On noise-free data the joint fit recovers all three generating parameters to 1e-9%, confirming the
+solver. On the **real** five-year window it converges to answers that are worse than ordinary least
+squares, and in one case economically impossible:
+
+| Category | Generating β | OLS β | Joint β |
+|---|---|---|---|
+| Personnel | 0.300 | 0.488 | 0.611 |
+| Other costs | 0.025 | 0.0445 | **−0.069** |
+
+A negative variable rate says costs fall as revenue rises. That is not a worse estimate, it is nonsense,
+and it would be indefensible in front of a finance director. The cause is identifiability, not the
+solver: fitting three parameters to five points leaves two residual degrees of freedom, and a
+brute-force grid search confirms the true least-squares optimum for this noise draw sits nowhere near
+the generating rate.
+
+**Revised recommendation.** My earlier advice to offer the joint estimator was incomplete. It is only
+safe combined with option (c), a longer window; on ten years of history it recovers β to about 12%
+against OLS's 76%. Ordinary least squares therefore stays the default, the joint method stays opt-in,
+and it needs a plausibility guard so a converged-but-absurd fit falls back rather than being persisted.
 3. ~~Run the three touchpoints against the real model and review the prompts on output.~~ **Done
    2026-09-19.** All three ran against `claude-opus-5`. The revenue proposal and deviation explanation
    passed live, with the explanation clearing the deterministic cross-check unaided. Prompt caching

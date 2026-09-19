@@ -198,6 +198,52 @@ def test_beta_within_20pct_of_generating_beta(wide, truth, code):
     assert fits[code].beta == pytest.approx(truth["categories"][code]["beta"], rel=0.20)
 
 
+@pytest.mark.parametrize(
+    "code,alpha_true,v_true,beta_true,sigma,seed",
+    [
+        ("PERS", 6000.0, 0.028, 0.3, 0.01, 5),
+        ("OTH", 500.0, 0.025, 0.025, 0.02, 15),
+    ],
+)
+def test_joint_beta_within_20pct_of_generating_beta_where_ols_fails(
+    code, alpha_true, v_true, beta_true, sigma, seed
+):
+    """The parallel case to the two xfails just above: same structural problem (a genuinely
+    valorizing alpha vs. a constant-intercept OLS), same PERS / OTH generating parameters as
+    ``true_parameters.json``, but resolved by ``method="joint"`` instead of accepted as bias.
+
+    This does *not* reuse the ``wide``/``truth`` fixture's 5-year window (2021-2025) directly:
+    jointly fitting three parameters from five points leaves only two residual degrees of
+    freedom, which is itself close to unidentifiable under this dataset's actual noise draw --
+    verified by hand (a grid search over v finds the least-squares optimum on that specific
+    5-point, 3-parameter problem sitting far from the generating v for both PERS and OTH, not
+    just for OLS). VERIFICATION.md 5.1 lists "longer window" as an independent, compatible
+    fix; this test combines it with the joint estimator, which is exactly what a joint
+    estimator needs to be identifiable in practice. It keeps the same generating alpha / v /
+    beta / noise-sigma as the real illustrative categories, just over the full 10-year history
+    instead of the 5-year regression window, with a fixed (per-category) seed for
+    reproducibility.
+
+    That contrast is the point of the whole exercise: OLS on this data is *not* within 20% of
+    the generating beta (asserted below, not xfailed -- it is expected to fail and does), while
+    the joint estimator is.
+    """
+    years = np.arange(2016, 2026)
+    rev = 12000.0 * 1.06 ** np.arange(len(years))
+    clean = alpha_true * (1.0 + v_true) ** (years - years[0]) + beta_true * rev
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0.0, sigma * clean.mean(), len(years))
+    cost = clean + noise
+    wide_synth = pd.DataFrame({"REV": rev, code: cost}, index=pd.Index(years, name="year"))
+    window = (int(years[0]), int(years[-1]))
+
+    joint = fit_category(wide_synth, code, window, ledger=DerivationLedger(), method="joint")
+    assert joint.beta == pytest.approx(beta_true, rel=0.20)
+
+    ols_fit = fit_category(wide_synth, code, window, ledger=DerivationLedger(), method="ols")
+    assert abs(ols_fit.beta / beta_true - 1.0) > 0.20
+
+
 # --------------------------------------------------------------------------- 3. noise-free sanity
 
 

@@ -9,7 +9,8 @@ tests inject scripted fakes). When it is ``None`` the real model
 Anthropic credential (``ANTHROPIC_API_KEY`` in ``.env`` or the environment); without either the
 AI routes answer 503 with ``nvplan.ai.credential_hint()`` as the detail.
 
-Error mapping: LookupError -> 404, GateError -> 409, ProposalRejected / ExplanationRejected -> 422,
+Error mapping: LookupError -> 404, GateError -> 409,
+ProposalRejected / ExplanationRejected / AnswerRejected -> 422,
 ValueError -> 400, MissingCredentials -> 503, ModelRefused -> 502.
 """
 
@@ -28,10 +29,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from nvplan import config
 from nvplan.ai import (
+    AnswerRejected,
     ExplanationRejected,
     MissingCredentials,
     ModelRefused,
     ProposalRejected,
+    ask,
     audit,
     credential_hint,
     credentials_available,
@@ -169,6 +172,11 @@ def _register(app: FastAPI) -> None:
 
     @app.exception_handler(ExplanationRejected)
     async def _explanation_rejected(_r, exc):  # noqa: ANN001
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    @app.exception_handler(AnswerRejected)
+    async def _answer_rejected(_r, exc):  # noqa: ANN001
+        # UI.md Part 3: an unsourced figure discards the whole answer; nothing was persisted.
         return JSONResponse(status_code=422, content={"detail": str(exc)})
 
     @app.exception_handler(MissingCredentials)
@@ -330,6 +338,17 @@ def _register(app: FastAPI) -> None:
         rec = run_deviation_explanation(factory, scenario_kind=body.scenario_kind, year=body.year, model=model)
         with factory() as s:
             return q.ai_record_dict(s, s.get(AiRecord, rec.id))
+
+    # ---- conversational assistant (UI.md Part 3) --------------------------------
+
+    @app.post("/assistant/ask", response_model=None)
+    def assistant_ask(body: S.AssistantAskIn, request: Request):
+        factory = request.app.state.session_factory
+        model = resolve_model(
+            request.app, "assistant", {"question": body.question, "scenario_kind": body.scenario_kind}
+        )
+        answer = ask(factory, body.question, scenario_kind=body.scenario_kind, model=model)
+        return answer.model_dump()
 
     # ---- analysis --------------------------------------------------------------
 

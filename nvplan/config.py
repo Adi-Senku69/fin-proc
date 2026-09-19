@@ -75,6 +75,46 @@ def _env_list(name: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()] if raw else []
 
 
+def _env_float(name: str, default: float, *, lo: float = 0.0, hi: float = 1.0) -> float:
+    """A float in ``[lo, hi)``; ``default`` when unset."""
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name}={raw!r} is not a number") from exc
+    if not (lo <= value < hi):
+        raise ValueError(f"{name}={raw!r} must be in [{lo}, {hi})")
+    return value
+
+
+# --------------------------------------------------------------------------- regression method knobs
+#
+# VERIFICATION.md 5.1 / 5.2: the PDF's constant-intercept OLS cannot separate a growing fixed
+# part from the variable rate, and its valorization rate (mean YoY growth of the fixed part)
+# is meaningless when the fitted intercept is near zero. Two independent, opt-in fixes:
+#
+#   REGRESSION_METHOD              - "ols" (PDF, default, unchanged behaviour) or "joint"
+#                                     (non-linear least squares on alpha*(1+v)^(t-t0) +
+#                                     beta*Revenue_t; selectable per nvplan.core.regression).
+#   VALORIZATION_DEGENERACY_SHARE   - the guard on the valorization rate: below this share of
+#                                     mean cost, |alpha| is treated as degenerate and the rate
+#                                     is reported undefined regardless of which method fit it.
+
+REGRESSION_METHODS: tuple[str, ...] = ("ols", "joint")
+REGRESSION_METHOD = _env("NVPLAN_REGRESSION_METHOD") or "ols"
+if REGRESSION_METHOD not in REGRESSION_METHODS:
+    raise ValueError(
+        f"NVPLAN_REGRESSION_METHOD={REGRESSION_METHOD!r} is not valid; "
+        f"expected one of {', '.join(REGRESSION_METHODS)}"
+    )
+
+# |alpha| < share * mean(cost) over the window => valorization rate reported undefined
+# (status "degenerate_intercept"). Default 5%, per VERIFICATION.md 5.2.
+VALORIZATION_DEGENERACY_SHARE = _env_float("NVPLAN_VALORIZATION_DEGENERACY_SHARE", 0.05)
+
+
 # --------------------------------------------------------------------------- AI model config
 
 # Model id handed to ChatAnthropic (nvplan.ai.agents.get_model).

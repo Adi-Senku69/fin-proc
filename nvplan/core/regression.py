@@ -1,11 +1,24 @@
 """OLS split of each cost category into fixed (alpha) and variable (beta) parts.
 
-Method (exactly as the PDF):
+Method (exactly as the PDF, ``method="ols"``, the default):
 
     Cost_t = alpha + beta * Revenue_t + eps_t         OLS over the window
     R^2    = 1 - SS_res / SS_tot
     f_t    = Cost_t - beta * Revenue_t                fixed part (= alpha + eps_t)
     v      = mean_t ( f_t / f_{t-1} - 1 )             valorization rate (avg YoY growth of f)
+
+A selectable alternative, ``method="joint"`` (VERIFICATION.md 5.1): the PDF's OLS fits a
+*constant* alpha, so over a short window the growth of a genuinely valorizing fixed part is
+almost collinear with revenue growth and gets absorbed into beta. The joint estimator instead
+fits alpha, its own growth rate v and beta together by non-linear least squares on
+``alpha*(1+v)^(t-t0) + beta*Revenue_t``, starting from the OLS solution (v=0) and falling back
+to it if the fit does not converge.
+
+Either way, the valorization rate is guarded (VERIFICATION.md 5.2): when the fitted alpha is a
+negligible share of mean cost, or the fixed part changes sign across the window, "mean YoY
+growth of a number that hovers around zero" is not a rate -- it is reported undefined
+(``valorization_status`` != ``"ok"``, ``valorization_rate_raw`` is ``None``) and projection
+falls back to a rate of 0.0, with the fallback and its reason recorded in the derivation.
 
 OTH is regressed *net of depreciation* (OTH - DEPR); :func:`fit_all` subtracts
 the component series and records that in the derivation inputs.
@@ -22,6 +35,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from nvplan import config
 from nvplan.core.ledger import CALC_VERSION, DerivationLedger, calc_version
 
 __all__ = [
@@ -31,17 +45,20 @@ __all__ = [
     "fit_category",
     "fit_all",
     "ols",
+    "fit_joint",
     "revenue_default_path",
     "revenue_growth_rate",
     "actual_key",
     "param_key",
     "default_revenue_key",
     "DEFAULT_COST_CODES",
+    "REGRESSION_METHODS",
 ]
 
 DEFAULT_COST_CODES: tuple[str, ...] = ("MAT", "EXT", "PERS", "OTH")
 DEFAULT_WINDOW: tuple[int, int] = (2021, 2025)
 COMPONENT_CODE = "DEPR"  # the component subtracted from OTH before regression
+REGRESSION_METHODS: tuple[str, ...] = config.REGRESSION_METHODS  # ("ols", "joint")
 
 
 # --------------------------------------------------------------------------- keys
@@ -68,6 +85,11 @@ class FitResult:
     alpha: float
     beta: float
     r_squared: float
+    #: The rate actually used for projection: 0.0 whenever ``valorization_status`` != "ok"
+    #: (VERIFICATION.md 5.2's fallback), otherwise equal to ``valorization_rate_raw``. Every
+    #: existing caller (``project_scenario``, ``as_parameter_row``, the persisted ``parameter``
+    #: row, ``deviation.py``, ``backtest.py``) reads *this* field and a plain float is what it
+    #: has always gotten, so none of them need to change to stay safe.
     valorization_rate: float
     window_from: int
     window_to: int
@@ -77,9 +99,28 @@ class FitResult:
     derivation_key: str = ""
     #: component series subtracted from the raw cost before the fit (e.g. "DEPR" for OTH)
     component_code: str | None = None
+    #: "ols" (default, PDF) or "joint" (VERIFICATION.md 5.1's selectable estimator).
+    method: str = "ols"
+    #: "ok" | "degenerate_intercept" | "sign_change" (VERIFICATION.md 5.2).
+    valorization_status: str = "ok"
+    #: The honest, un-guarded rate: mean YoY growth of the fixed part (method "ols") or the
+    #: jointly-fitted v (method "joint"). ``None`` exactly when ``valorization_status`` != "ok"
+    #: -- the rate is undefined, not a (misleading) number.
+    valorization_rate_raw: float | None = None
+    #: Human-readable reason the rate was reported undefined and 0.0 substituted; ``None`` when
+    #: ``valorization_status`` == "ok".
+    valorization_fallback_reason: str | None = None
+    #: Only meaningful for method "joint": whether the non-linear fit converged (``None`` for
+    #: "ols", or for "joint" when it never ran because of a hard input error).
+    joint_converged: bool | None = None
+    #: Iterations the joint solver took (``None`` for "ols").
+    joint_iterations: int | None = None
 
     def fixed_part_at(self, year: int, t0: int | None = None) -> float:
-        """alpha valorized to ``year``: alpha * (1+v)^(year - t0), t0 defaults to window_to."""
+        """alpha valorized to ``year``: alpha * (1+v)^(year - t0), t0 defaults to window_to.
+
+        Uses the effective (guarded) :attr:`valorization_rate`, never ``None``.
+        """
         t0 = self.window_to if t0 is None else t0
         return self.alpha * (1.0 + self.valorization_rate) ** (int(year) - int(t0))
 
@@ -143,6 +184,133 @@ def _mean_yoy_growth(values: Sequence[float]) -> tuple[float, list[float]]:
     return float(np.mean(growth)), growth
 
 
+# --------------------------------------------------------------------------- valorization guard (VERIFICATION 5.2)
+
+
+def _valorization_guard(
+    alpha: float, fixed: np.ndarray, mean_cost: float, share: float
+) -> tuple[str, str | None]:
+    """Decide whether a valorization rate is trustworthy.
+
+    Degenerate exactly when (VERIFICATION.md 5.2):
+
+    * the fitted intercept is a negligible share of mean cost (``|alpha| < share * mean_cost``
+      -- with a growing-sign, i.e. non-positive, ``mean_cost`` treated as always degenerate), or
+    * the fixed-part series changes sign across the window.
+
+    Either condition alone is enough; "mean YoY growth" of a number hovering around, or
+    crossing, zero is not a meaningful rate. Returns ``(status, reason)`` with
+    ``reason is None`` iff ``status == "ok"``.
+    """
+    if mean_cost <= 0.0:
+        reason = (
+            f"mean cost {mean_cost:.4f} is not positive, so no share of it is meaningful: "
+            "the fixed part's intercept cannot be judged non-degenerate"
+        )
+        return "degenerate_intercept", reason
+    share_pct = abs(alpha) / mean_cost
+    if share_pct < share:
+        reason = (
+            f"|alpha|={abs(alpha):.4f} is {share_pct * 100:.2f}% of mean cost {mean_cost:.4f}, "
+            f"below the {share * 100:.1f}% degeneracy threshold: the fixed part hovers around "
+            f"zero, so its mean YoY growth is meaningless"
+        )
+        return "degenerate_intercept", reason
+    signs = np.sign(fixed)
+    signs = signs[signs != 0]
+    if signs.size >= 2 and not np.all(signs == signs[0]):
+        reason = (
+            f"the fixed part changes sign across the window ({[round(float(f), 4) for f in fixed]}): "
+            "its mean YoY growth alternates sign too and is not a rate"
+        )
+        return "sign_change", reason
+    return "ok", None
+
+
+# --------------------------------------------------------------------------- joint estimator (VERIFICATION 5.1)
+
+
+def fit_joint(
+    dt: np.ndarray,
+    revenue: np.ndarray,
+    cost: np.ndarray,
+    *,
+    alpha0: float,
+    beta0: float,
+    v0: float = 0.0,
+    max_iter: int = 200,
+    tol: float = 1e-10,
+) -> tuple[float, float, float, bool, int]:
+    """Levenberg-Marquardt fit of ``cost_t = alpha*(1+v)^dt_t + beta*revenue_t``.
+
+    ``dt`` is ``year - t0`` (``t0`` = window_to, matching :meth:`FitResult.fixed_part_at`).
+    Starts at ``(alpha0, v0, beta0)`` -- the OLS solution with ``v0=0`` by default, exactly the
+    PDF's implicit assumption -- and takes damped Gauss-Newton steps, accepting a step only when
+    it lowers the sum of squared residuals.
+
+    Returns ``(alpha, v, beta, converged, iterations)``. ``converged`` is ``True`` only when a
+    step's size falls below ``tol`` (relative to the parameter vector's norm) before
+    ``max_iter`` is exhausted; the caller falls back to the OLS values when it is ``False``, as
+    the PDF's estimator remains well-defined even when the joint one is not.
+    """
+    dt = np.asarray(dt, dtype=float)
+    revenue = np.asarray(revenue, dtype=float)
+    cost = np.asarray(cost, dtype=float)
+    params = np.array([float(alpha0), float(v0), float(beta0)], dtype=float)
+
+    def model_and_jacobian(p: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        a, v, b = p
+        base = 1.0 + v
+        pw = np.power(base, dt)
+        # d/dv [a * (1+v)^dt] = a * dt * (1+v)^(dt-1); well-defined at dt=0 (value 0) even
+        # when base is 0, since the dt==0 branch never evaluates (1+v)^(-1).
+        pw_dv = np.where(dt == 0.0, 0.0, a * dt * np.power(base, dt - 1.0))
+        yhat = a * pw + b * revenue
+        jac = np.column_stack([pw, pw_dv, revenue])
+        return yhat, jac
+
+    def sse(p: np.ndarray) -> tuple[float, np.ndarray]:
+        yhat, _ = model_and_jacobian(p)
+        resid = yhat - cost
+        return float(np.sum(resid * resid)), resid
+
+    lam = 1e-3
+    cur_cost, resid = sse(params)
+    converged = False
+    iterations = 0
+    if not np.isfinite(cur_cost):
+        return float(alpha0), float(v0), float(beta0), False, 0
+    for iterations in range(1, max_iter + 1):
+        _, jac = model_and_jacobian(params)
+        jtj = jac.T @ jac
+        jtr = jac.T @ resid
+        try:
+            delta = np.linalg.solve(jtj + lam * np.eye(3), -jtr)
+        except np.linalg.LinAlgError:
+            break
+        candidate = params + delta
+        if not np.all(np.isfinite(candidate)) or candidate[1] <= -1.0:
+            lam *= 10.0
+            if lam > 1e14:
+                break
+            continue
+        new_cost, new_resid = sse(candidate)
+        if np.isfinite(new_cost) and new_cost < cur_cost:
+            step = float(np.linalg.norm(delta))
+            scale = float(np.linalg.norm(params)) + 1e-12
+            params, cur_cost, resid = candidate, new_cost, new_resid
+            lam = max(lam * 0.3, 1e-12)
+            if step < tol * scale:
+                converged = True
+                break
+        else:
+            lam *= 10.0
+            if lam > 1e14:
+                break
+    alpha, v, beta = (float(x) for x in params)
+    return alpha, v, beta, converged, int(iterations)
+
+
 # --------------------------------------------------------------------------- per-category fit
 
 
@@ -155,17 +323,39 @@ def fit_category(
     revenue_code: str = "REV",
     subtract: pd.Series | None = None,
     subtract_code: str | None = None,
+    method: str | None = None,
+    degeneracy_share: float | None = None,
+    joint_max_iter: int = 200,
+    joint_tol: float = 1e-10,
 ) -> FitResult:
     """Fit ``Cost_t = alpha + beta * Revenue_t`` for one category over ``window``.
 
     ``subtract`` (indexed by year) is removed from the raw cost before the fit
     (used for OTH - DEPR); ``subtract_code`` labels it in the derivation.
     Registers derivation ``param:{code}``.
+
+    ``method`` selects the estimator (``nvplan.config.REGRESSION_METHOD`` when omitted):
+
+    * ``"ols"`` (default, the PDF's method, unchanged): constant intercept, ``v`` = mean YoY
+      growth of the fixed part ``Cost_t - beta*Revenue_t``.
+    * ``"joint"`` (VERIFICATION.md 5.1): :func:`fit_joint` fits alpha, v and beta together by
+      non-linear least squares, starting from the OLS solution; falls back to OLS if it does
+      not converge.
+
+    Either way the resulting valorization rate is guarded (VERIFICATION.md 5.2, see
+    :func:`_valorization_guard`): when degenerate, ``FitResult.valorization_rate_raw`` is
+    ``None`` and ``.valorization_status`` says why, while ``.valorization_rate`` -- what every
+    downstream consumer (projection, the persisted parameter row) actually uses -- falls back
+    to 0.0. ``degeneracy_share`` overrides ``nvplan.config.VALORIZATION_DEGENERACY_SHARE``.
     """
     if code not in wide.columns:
         raise KeyError(f"category {code!r} not in wide frame columns {list(wide.columns)}")
     if revenue_code not in wide.columns:
         raise KeyError(f"revenue code {revenue_code!r} not in wide frame")
+    method = config.REGRESSION_METHOD if method is None else method
+    if method not in REGRESSION_METHODS:
+        raise ValueError(f"method={method!r} is not valid; expected one of {REGRESSION_METHODS}")
+    share = config.VALORIZATION_DEGENERACY_SHARE if degeneracy_share is None else float(degeneracy_share)
     years = _window_years(wide, window)
 
     rev = wide.loc[years, revenue_code].to_numpy(dtype=float)
@@ -185,8 +375,42 @@ def fit_category(
         raise ValueError(f"NaN in window {window} for {code}")
 
     alpha, beta, r2, fitted, resid = ols(rev, cost)
-    fixed = cost - beta * rev  # == alpha + resid
-    v, growth = _mean_yoy_growth(fixed)
+
+    joint_converged: bool | None = None
+    joint_iterations: int | None = None
+    v_raw: float
+    if method == "joint":
+        t0 = years[-1]
+        dt = np.asarray(years, dtype=float) - float(t0)
+        alpha_j, v_j, beta_j, joint_converged, joint_iterations = fit_joint(
+            dt, rev, cost, alpha0=alpha, beta0=beta, max_iter=joint_max_iter, tol=joint_tol
+        )
+        if joint_converged:
+            alpha, beta, v_raw = alpha_j, beta_j, v_j
+            model = alpha * np.power(1.0 + v_raw, dt) + beta * rev
+            resid = cost - model
+            fitted = model
+            ss_res = float(np.sum(resid**2))
+            ss_tot = float(np.sum((cost - cost.mean()) ** 2))
+            r2 = 1.0 if ss_tot == 0.0 else 1.0 - ss_res / ss_tot
+            if ss_tot == 0.0:
+                r2 = 1.0 if ss_res == 0.0 else 0.0
+        else:
+            # not converged: fall back entirely to the OLS solution already computed above
+            v_raw, _ = _mean_yoy_growth(cost - beta * rev)
+    else:
+        v_raw, _ = _mean_yoy_growth(cost - beta * rev)
+
+    fixed = cost - beta * rev  # == alpha + resid, with whichever beta was actually used
+    _, growth = _mean_yoy_growth(fixed)  # observed YoY growth of the fixed part, for the trace
+    mean_cost = float(np.mean(cost))
+    valorization_status, fallback_reason = _valorization_guard(alpha, fixed, mean_cost, share)
+    if valorization_status == "ok":
+        valorization_rate_raw: float | None = v_raw
+        valorization_rate = v_raw
+    else:
+        valorization_rate_raw = None
+        valorization_rate = 0.0  # VERIFICATION.md 5.2's fallback: valorize at 0 when undefined
 
     points = [
         {
@@ -201,10 +425,18 @@ def fit_category(
     fixed_series = {int(y): float(f) for y, f in zip(years, fixed)}
 
     key = param_key(code)
-    formula = (
-        f"Cost_t = alpha + beta * Revenue_t + eps (OLS, window {years[0]}-{years[-1]}); "
-        "v = mean YoY growth of (Cost_t - beta*Revenue_t)"
-    )
+    if method == "joint":
+        formula = (
+            f"Cost_t = alpha*(1+v)^(t-t0) + beta*Revenue_t (joint non-linear least squares, "
+            f"window {years[0]}-{years[-1]}, started from OLS)"
+        )
+        if not joint_converged:
+            formula += "; did not converge, fell back to OLS: Cost_t = alpha + beta*Revenue_t + eps"
+    else:
+        formula = (
+            f"Cost_t = alpha + beta * Revenue_t + eps (OLS, window {years[0]}-{years[-1]}); "
+            "v = mean YoY growth of (Cost_t - beta*Revenue_t)"
+        )
     inputs: dict[str, Any] = {
         "points": points,
         "revenue_code": revenue_code,
@@ -229,11 +461,18 @@ def fit_category(
             "alpha": alpha,
             "beta": beta,
             "r_squared": r2,
-            "v": v,
+            "v": valorization_rate,
             "n": len(years),
             "window_from": years[0],
             "window_to": years[-1],
             "calc_version": CALC_VERSION,
+            "method": method,
+            "valorization_status": valorization_status,
+            "valorization_rate_raw": valorization_rate_raw,
+            "valorization_fallback_reason": fallback_reason,
+            "valorization_degeneracy_share": share,
+            "joint_converged": joint_converged,
+            "joint_iterations": joint_iterations,
         },
         parents=(),
     )
@@ -242,7 +481,7 @@ def fit_category(
         alpha=alpha,
         beta=beta,
         r_squared=r2,
-        valorization_rate=v,
+        valorization_rate=valorization_rate,
         window_from=years[0],
         window_to=years[-1],
         n=len(years),
@@ -250,6 +489,12 @@ def fit_category(
         fixed_part_series=fixed_series,
         derivation_key=key,
         component_code=subtract_code if subtract is not None else None,
+        method=method,
+        valorization_status=valorization_status,
+        valorization_rate_raw=valorization_rate_raw,
+        valorization_fallback_reason=fallback_reason,
+        joint_converged=joint_converged,
+        joint_iterations=joint_iterations,
     )
 
 
@@ -263,10 +508,14 @@ def fit_all(
     revenue_code: str = "REV",
     component_of: str = "OTH",
     component_code: str = COMPONENT_CODE,
+    method: str | None = None,
+    degeneracy_share: float | None = None,
 ) -> dict[str, FitResult]:
     """Fit every cost category. ``component_of`` (OTH) is regressed net of ``depreciation``.
 
     If ``depreciation`` is None the ``DEPR`` column of ``wide`` is used when present.
+    ``method`` and ``degeneracy_share`` are forwarded to :func:`fit_category` for every
+    category (``nvplan.config`` defaults when omitted; see VERIFICATION.md 5.1 / 5.2).
     """
     codes = list(codes)
     if depreciation is None and component_code in wide.columns:
@@ -279,9 +528,13 @@ def fit_all(
             out[code] = fit_category(
                 wide, code, window, ledger=ledger, revenue_code=revenue_code,
                 subtract=depreciation, subtract_code=component_code,
+                method=method, degeneracy_share=degeneracy_share,
             )
         else:
-            out[code] = fit_category(wide, code, window, ledger=ledger, revenue_code=revenue_code)
+            out[code] = fit_category(
+                wide, code, window, ledger=ledger, revenue_code=revenue_code,
+                method=method, degeneracy_share=degeneracy_share,
+            )
     return out
 
 

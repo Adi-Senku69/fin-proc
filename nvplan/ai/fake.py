@@ -278,6 +278,25 @@ def scripted_deviation_model(
     )
 
 
+# --------------------------------------------------------------------------- conversational assistant (UI.md Part 3)
+
+
+def scripted_assistant_model(
+    *,
+    segments: list[dict[str, Any]],
+    proposal: dict[str, Any] | None = None,
+    turns: list[AIMessage] | None = None,
+) -> FakeToolCallingModel:
+    """Scripted assistant run: optional tool-call turns (default: one ``get_plan_values``
+    read, standing in for "the model looked something up"), then the final ``AssistantAnswer``
+    structured turn. ``segments`` are plain dicts matching ``TextSegment`` / ``FigureSegment``
+    / ``ClaimSegment`` - the test scripts exactly what a well- or badly-behaved model would
+    return, and ``nvplan.ai.assistant.verify_answer`` is what is actually being tested."""
+    payload = {"segments": segments, "proposal": proposal, "ai_record_id": -1, "usage": {}}
+    pre = turns if turns is not None else [ai_calls(tool_call("get_plan_values", {"scenario_kind": "base"}, "pv"))]
+    return FakeToolCallingModel(responses=[*pre, structured("AssistantAnswer", payload)])
+
+
 # --------------------------------------------------------------------------- refusals
 
 

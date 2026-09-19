@@ -34,6 +34,7 @@ Run context
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -44,6 +45,8 @@ from sqlalchemy.orm import Session
 
 from nvplan.ai.figures import _categories, _latest_parameters, _scenario_by_kind, plan_vs_actual  # noqa: F401 (re-exported)
 from nvplan.config import DATA_DIR
+from nvplan.core import DerivationLedger, to_wide
+from nvplan.core.backtest import run_backtest
 from nvplan.db.models import (
     Actual,
     AiRecord,
@@ -52,8 +55,18 @@ from nvplan.db.models import (
     ExternalNote,
     NoteSource,
     PlanValue,
+    Scenario,
     Touchpoint,
 )
+from nvplan.ingest.actuals import actuals_frame
+from nvplan.services.trace import find_plan_value, trace_plan_value
+
+# The brain-side tables (PLATFORM.md §6) are a separate, independently-importable package;
+# importing them here is the same choice nvplan.services.trace already makes (its module
+# doc) so the conversational assistant (UI.md Part 3) can offer "brain-side equivalents" of
+# the plan tools. Every claim/evidence query below degrades to an error string rather than
+# raising when the tables don't exist (a finance-only database) - see ``_claims_unavailable``.
+from provenance import Claim, ClaimKind, Evidence
 
 SessionFactory = Callable[[], Session]
 
@@ -117,6 +130,17 @@ def _category_by_code(session: Session, code: str) -> Category | None:
     return session.scalar(select(Category).where(Category.code == code.strip().upper()))
 
 
+def _claims_unavailable(session: Session, exc: Exception) -> str:
+    """A finance-only database has no claim/evidence tables; degrade to an error string
+    (never raise - the same graceful-degradation discipline as
+    ``nvplan.services.trace._Lookup.claim_block``) and roll back so the session stays usable."""
+    try:
+        session.rollback()
+    except Exception:  # noqa: BLE001
+        pass
+    return _err(f"brain tables not available in this database: {exc}")
+
+
 def _note_dict(n: ExternalNote, cats: dict[int, Category]) -> dict[str, Any]:
     return {
         "id": n.id,
@@ -156,12 +180,14 @@ def make_read_tools(session_factory: SessionFactory) -> list[BaseTool]:
     @tool
     def get_parameters() -> str:
         """Latest regression parameters per cost category: alpha (fixed part), beta (variable
-        rate on revenue), R^2, valorization rate v and the historical window used."""
+        rate on revenue), R^2, valorization rate v and the historical window used.
+        ``parameter_id`` is the id to cite one of these figures (ref kind "parameter")."""
         with session_factory() as s:
             cats = _categories(s)
             rows = [
                 {
                     "category_code": cats[p.category_id].code,
+                    "parameter_id": p.id,
                     "alpha": p.alpha,
                     "beta": p.beta,
                     "r_squared": p.r_squared,
@@ -176,7 +202,9 @@ def make_read_tools(session_factory: SessionFactory) -> list[BaseTool]:
 
     @tool
     def get_plan_values(scenario_kind: str, category_code: str | None = None) -> str:
-        """Plan values (k EUR) for a scenario (best/base/worst), optionally one category."""
+        """Plan values (k EUR) for a scenario (best/base/worst), optionally one category -
+        the plan grid. ``plan_value_id`` is the id to cite one of these figures (ref kind
+        "plan_value")."""
         with session_factory() as s:
             scenario = _scenario_by_kind(s, scenario_kind)
             if scenario is None:
@@ -190,6 +218,7 @@ def make_read_tools(session_factory: SessionFactory) -> list[BaseTool]:
                 stmt = stmt.where(PlanValue.category_id == cat.id)
             rows = [
                 {
+                    "plan_value_id": pv.id,
                     "category_code": cats[pv.category_id].code,
                     "year": pv.year,
                     "value": pv.value,
@@ -200,6 +229,169 @@ def make_read_tools(session_factory: SessionFactory) -> list[BaseTool]:
                 for pv in s.scalars(stmt).all()
             ]
         return _dumps({"scenario": scenario.kind.value, "unit": "k EUR", "rows": rows})
+
+    @tool
+    def get_plan_value(scenario_kind: str, category_code: str, year: int) -> str:
+        """One plan value (k EUR) with its id - the precise citation lookup (ref kind
+        "plan_value", id=plan_value_id) for a single category/year, in the latest scenario of
+        ``scenario_kind`` (best/base/worst)."""
+        with session_factory() as s:
+            try:
+                pv = find_plan_value(s, scenario_kind=scenario_kind, category_code=category_code.strip().upper(), year=int(year))
+            except LookupError as e:
+                return _err(str(e))
+            cats = _categories(s)
+            return _dumps(
+                {
+                    "plan_value_id": pv.id,
+                    "category_code": cats[pv.category_id].code,
+                    "year": pv.year,
+                    "value": pv.value,
+                    "path": pv.path.value,
+                    "unit": "k EUR",
+                    "derivation_id": pv.derivation_id,
+                    "ai_record_id": pv.ai_record_id,
+                    "claim_id": pv.claim_id,
+                }
+            )
+
+    @tool
+    def get_trace(plan_value_id: int, max_depth: int = 6) -> str:
+        """The lineage tree of one plan value (root = the plan value itself, ancestors =
+        parameters / decisions / actuals / other derivations it was built from). Every node
+        carries the id needed to cite it: a "plan_value" node -> ref_id, a "parameter" node ->
+        ref_id, any node (incl. an "actual"/"derivation" node) -> derivation_id (a real
+        ``derivation`` row, citable as ref kind "derivation"), and a node with a non-null
+        "claim" block -> claim["claim_id"] (citable as ref kind "claim")."""
+        with session_factory() as s:
+            try:
+                node = trace_plan_value(s, int(plan_value_id), max_depth=max_depth)
+            except LookupError as e:
+                return _err(str(e))
+            return _dumps(node.to_dict())
+
+    @tool
+    def get_backtest_summary(window_len: int = 5) -> str:
+        """Backtest verdict (within/marginal/missed against the MAPE thresholds) per category
+        and horizon. This is a rolling analysis recomputed on demand, not a stored row - it has
+        no id to cite. Never state one of these numbers as a figure; describe the verdict in
+        words only (e.g. "within threshold", "missed at the 2-year horizon")."""
+        with session_factory() as s:
+            actuals = actuals_frame(s, include_components=True)
+            if actuals.empty:
+                return _err("no actuals in the database - ingest first")
+            wide = to_wide(actuals)
+            if "DEPR" not in wide.columns:
+                return _err("actuals have no DEPR series")
+            res = run_backtest(
+                wide, ledger=DerivationLedger(), window_len=window_len, horizons=(1, 2, 3), depreciation=wide["DEPR"]
+            )
+            summary = res.summary.to_dict(orient="records")
+            for row in summary:
+                for k, v in list(row.items()):
+                    if isinstance(v, float) and not math.isfinite(v):
+                        row[k] = None
+        return _dumps(
+            {
+                "n_cases": len(res.cases),
+                "thresholds": {"mape_within": res.threshold_low, "mape_marginal": res.threshold_high},
+                "summary": summary,
+                "markdown": res.to_markdown(),
+                "note": "no citable id - describe the verdict, never the bare MAPE number",
+            }
+        )
+
+    @tool
+    def get_decisions(status: str | None = None) -> str:
+        """The brain's decision list: claim_id, slug, title, status, date, has_effect - the
+        brain-side equivalent of the plan grid. Use ``get_decision`` for one decision's
+        evidence and tags, and ``get_claim_impact`` for the plan values it drove. A decision's
+        title/status is citable as a "claim" segment; its quantified effect (when
+        has_effect is true) is citable as a figure with ref kind "claim", id=claim_id."""
+        with session_factory() as s:
+            try:
+                stmt = select(Claim).where(Claim.kind == ClaimKind.decision).order_by(Claim.id)
+                claims = s.scalars(stmt).all()
+            except Exception as e:  # noqa: BLE001 - missing brain tables in a finance-only DB
+                return _claims_unavailable(s, e)
+            rows = [
+                {
+                    "claim_id": c.id,
+                    "slug": c.slug,
+                    "title": c.title,
+                    "status": c.status,
+                    "date": c.date.isoformat() if c.date else None,
+                    "has_effect": c.effect_json is not None,
+                }
+                for c in claims
+                if status is None or c.status == status
+            ]
+        return _dumps({"rows": rows})
+
+    @tool
+    def get_decision(claim_id: int) -> str:
+        """One decision (or any brain claim) with its evidence rows (each carrying its
+        provenance tag - the "tags" of the demo UI), reversal condition and quantified effect.
+        Cite kind="claim", id=claim_id for a claim segment; the effect's value (when present)
+        is also citable as ref kind "claim", id=claim_id for a figure segment."""
+        with session_factory() as s:
+            try:
+                claim = s.get(Claim, int(claim_id))
+            except Exception as e:  # noqa: BLE001 - missing brain tables in a finance-only DB
+                return _claims_unavailable(s, e)
+            if claim is None:
+                return _err(f"claim {claim_id} not found")
+            evidence = s.scalars(select(Evidence).where(Evidence.claim_id == claim.id).order_by(Evidence.id)).all()
+            ej = claim.effect_json or {}
+            effect = (
+                {"category_code": ej.get("category"), "year": ej.get("year"), "value": ej.get("value"), "unit": ej.get("unit")}
+                if claim.effect_json
+                else None
+            )
+            return _dumps(
+                {
+                    "claim_id": claim.id,
+                    "kind": claim.kind.value,
+                    "slug": claim.slug,
+                    "title": claim.title,
+                    "status": claim.status,
+                    "date": claim.date.isoformat() if claim.date else None,
+                    "reversal_condition": claim.reversal_condition,
+                    "effect": effect,
+                    "evidence": [
+                        {"section": e.section.value, "text": e.text, "tag_kind": e.tag_kind.value, "tag_raw": e.tag_raw}
+                        for e in evidence
+                    ],
+                }
+            )
+
+    @tool
+    def get_claim_impact(claim_id: int) -> str:
+        """Which plan values a decision drove - the reverse of the trace. Rows carry
+        ``plan_value_id`` to cite (ref kind "plan_value")."""
+        with session_factory() as s:
+            try:
+                claim = s.get(Claim, int(claim_id))
+            except Exception as e:  # noqa: BLE001 - missing brain tables in a finance-only DB
+                return _claims_unavailable(s, e)
+            if claim is None:
+                return _err(f"claim {claim_id} not found")
+            cats = _categories(s)
+            rows = s.scalars(select(PlanValue).where(PlanValue.claim_id == claim.id)).all()
+            out = []
+            for pv in rows:
+                scen = s.get(Scenario, pv.scenario_id)
+                out.append(
+                    {
+                        "plan_value_id": pv.id,
+                        "scenario_kind": scen.kind.value if scen is not None else None,
+                        "category_code": cats[pv.category_id].code,
+                        "year": pv.year,
+                        "value": pv.value,
+                        "path": pv.path.value,
+                    }
+                )
+        return _dumps({"rows": out})
 
     @tool
     def get_external_notes() -> str:
@@ -235,10 +427,16 @@ def make_read_tools(session_factory: SessionFactory) -> list[BaseTool]:
         get_actuals,
         get_parameters,
         get_plan_values,
+        get_plan_value,
+        get_trace,
         get_external_notes,
         get_env_framework,
         get_control_table,
         get_plan_vs_actual,
+        get_backtest_summary,
+        get_decisions,
+        get_decision,
+        get_claim_impact,
     ]
 
 

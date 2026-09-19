@@ -184,6 +184,13 @@ class DeviationExplanationIn(BaseModel):
     year: int
 
 
+class AssistantAskIn(BaseModel):
+    """``POST /assistant/ask`` (UI.md Part 3)."""
+
+    question: str = Field(min_length=1)
+    scenario_kind: str = "base"
+
+
 class RevenueProposalOut(BaseModel):
     record: AiRecordOut
     default_value: float

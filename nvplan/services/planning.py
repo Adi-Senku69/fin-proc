@@ -177,8 +177,15 @@ def run_plan(
     investment_plan_path: str | Path | None = None,
     mapping_path: str | Path | None = None,
     control_table_path: str | Path | None = None,
+    method: str | None = None,
 ) -> PlanRun:
     """Compute the plan from the actuals in ``session`` and persist it (one transaction).
+
+    ``method`` selects the cost regression estimator (forwarded to
+    :func:`nvplan.core.regression.fit_all`; ``nvplan.config.REGRESSION_METHOD`` -- "ols", the
+    PDF's method -- when omitted, so a plan run with no ``method`` argument is unchanged).
+    See VERIFICATION.md 5.1 / 5.2: the guard on the valorization rate applies regardless of
+    ``method``, and its fallback (0.0, undefined) never raises downstream.
 
     ``revenue_override`` maps ``year -> entry``, where ``entry`` is either the legacy
     ``(value, ai_record_id)`` tuple or an :class:`Override` (PLATFORM.md §7.1). Both replace
@@ -241,7 +248,7 @@ def run_plan(
     # ---- 3. regression -------------------------------------------------------
     if "DEPR" not in wide.columns:
         raise ValueError("actuals have no DEPR series; OTH must be regressed net of depreciation")
-    fits = fit_all(wide, DEFAULT_COST_CODES, window, ledger=ledger, depreciation=wide["DEPR"])
+    fits = fit_all(wide, DEFAULT_COST_CODES, window, ledger=ledger, depreciation=wide["DEPR"], method=method)
 
     # ---- 4. revenue path -----------------------------------------------------
     base = revenue_default_path(wide, window, plan_years, ledger=ledger)
