@@ -155,7 +155,12 @@ def _write_claim_body(
                 Evidence(
                     claim_id=claim.id,
                     section=section,
-                    text=row,
+                    # Store the claim with its tag stripped and whitespace collapsed
+                    # (RowParse.text), not the raw row: tag_raw already carries the
+                    # tag verbatim, so storing the raw row as well would duplicate it
+                    # in every rendering of this evidence (once as tag_raw, once
+                    # trailing text).
+                    text=row_parse.text,
                     tag_kind=tag.kind,
                     tag_raw=tag.raw,
                     target_path=tag.target_path,
@@ -229,6 +234,19 @@ def ingest_tree(
 
         existing = session.execute(select(Claim).where(Claim.path == path_str)).scalar_one_or_none()
         if existing is not None and existing.body_sha256 == parsed.body_sha256:
+            # Idempotence fast path: an unchanged body hash means _write_claim_body
+            # would recompute byte-identical Evidence/ClaimLink rows, so we skip the
+            # rewrite entirely rather than re-parsing every unchanged file on every
+            # ingest. The one thing this fast path cannot do is *retroactively* fix
+            # rows that were written under an older, buggy version of
+            # _write_claim_body (e.g. one that stored the raw row instead of
+            # RowParse.text) — the hash hasn't changed, so this file is never
+            # revisited. `rebuild()` is the correction path for that: it wipes
+            # Claim/Evidence/ClaimLink first, so every file is re-ingested as if
+            # brand-new (no `existing` row survives to be hash-matched), which
+            # rewrites every Evidence row with the current logic. Any stale evidence
+            # text left over from before this fix requires a `rebuild`, not a plain
+            # re-ingest.
             skipped_unchanged += 1
             continue
 

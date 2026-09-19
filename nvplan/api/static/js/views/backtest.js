@@ -5,12 +5,12 @@
  */
 
 import { el, clear, chip, failurePanel } from "../dom.js";
-import { fmtCell } from "../format.js";
+import { fmtCell, fmtParam } from "../format.js";
 import { api } from "../api.js";
 
 export async function render(container, params, ctx) {
   container.append(el("h2", {}, ["Backtest"]));
-  const pane = el("div", {});
+  const pane = el("div", { class: "pane" });
   container.append(pane);
   await load(pane, ctx);
 }
@@ -55,7 +55,7 @@ function renderTable(rows) {
   for (const r of rows) {
     const tr = el("tr", { class: r.verdict ? `verdict-${r.verdict}` : "" });
     for (const c of cols) {
-      tr.append(el("td", {}, [c === "verdict" && r[c] ? chip(r[c], `chip-verdict chip-${r[c]}`) : fmtCell(r[c])]));
+      tr.append(el("td", {}, [c === "verdict" && r[c] ? chip(r[c], `chip-verdict chip-${r[c]}`) : fmtParam(c, r[c])]));
     }
     table.append(tr);
   }

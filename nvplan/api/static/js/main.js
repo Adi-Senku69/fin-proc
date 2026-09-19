@@ -53,7 +53,13 @@ async function refreshHealth(badge) {
   const h = res.data;
   const bits = [`db ${h.db_url}`, `${h.n_actuals} actuals`, `${h.n_scenarios} scenarios`];
   if (h.illustrative) bits.push("ILLUSTRATIVE DATA");
-  badge.append(bits.join("  ·  "));
+  const text = bits.join("  ·  ");
+  badge.append(text);
+  // The database path can be an arbitrarily long absolute path; app.css truncates
+  // this badge with an ellipsis rather than widening the header, so carry the full
+  // text here for anyone who hovers or inspects it (the click-to-refresh hint still
+  // applies and is folded in too).
+  badge.title = `${text}  ·  click to refresh`;
 }
 
 function main() {

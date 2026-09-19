@@ -5,7 +5,7 @@
  */
 
 import { el, clear, chip, failurePanel } from "../dom.js";
-import { fmtNum, fmtDate } from "../format.js";
+import { fmtNum, fmtDate, fmtParam } from "../format.js";
 import { api } from "../api.js";
 
 const PATH_LABELS = { valorized: "valorized", ai_proposed: "AI proposed", cascaded: "cascaded", decided: "decided" };
@@ -26,7 +26,7 @@ function kvTable(entries) {
   if (!entries.length) return null;
   const table = el("table", { class: "kv-table" });
   for (const [k, v] of entries) {
-    table.append(el("tr", {}, [el("th", {}, [k]), el("td", {}, [typeof v === "object" && v !== null ? JSON.stringify(v) : fmtNum(v)])]));
+    table.append(el("tr", {}, [el("th", {}, [k]), el("td", {}, [typeof v === "object" && v !== null ? JSON.stringify(v) : fmtParam(k, v)])]));
   }
   return table;
 }
@@ -36,7 +36,7 @@ function pointsTable(points) {
   const cols = Object.keys(points[0]);
   const table = el("table", { class: "data-table" });
   table.append(el("tr", {}, cols.map((c) => el("th", {}, [c]))));
-  for (const p of points) table.append(el("tr", {}, cols.map((c) => el("td", {}, [fmtNum(p[c])]))));
+  for (const p of points) table.append(el("tr", {}, cols.map((c) => el("td", {}, [fmtParam(c, p[c])]))));
   return el("details", { class: "points-details" }, [el("summary", {}, [`regression points (${points.length})`]), table]);
 }
 

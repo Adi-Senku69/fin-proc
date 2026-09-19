@@ -111,6 +111,10 @@ def test_05_claim_detail_evidence_and_reversal(client, state):
     assert tag_kinds  # every evidence row carries a tag kind
     for e in body["evidence"]:
         assert set(e) == {"section", "text", "tag_kind", "tag_raw", "target_path", "resolved"}
+        # defect: stored evidence text used to duplicate its own provenance tag,
+        # once as tag_raw and again trailing text.
+        assert not e["text"].endswith(e["tag_raw"])
+        assert e["text"].strip() != ""
     assert "links" in body and isinstance(body["links"], list)
 
 

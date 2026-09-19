@@ -138,6 +138,88 @@ class TestIngestOnRealTree:
         assert after.title is not None and after.title.endswith("(revised)")
 
 
+class TestStoredEvidenceTextIsStripped:
+    """Defect: `Evidence.text` used to store the raw row (tag included), duplicating
+    `tag_raw` in every rendering. `_write_claim_body` must now store `RowParse.text`
+    (the claim with its tag stripped and whitespace collapsed) instead."""
+
+    def test_stored_text_never_ends_with_its_own_tag_raw(self, prov_session):
+        ingest_tree(prov_session, BRAIN_ROOT, strict=True)
+        rows = prov_session.execute(select(Evidence)).scalars().all()
+        assert rows, "expected at least one evidence row from the real tree"
+        for row in rows:
+            assert not row.text.endswith(row.tag_raw), (
+                f"evidence {row.id} text still ends with its own tag_raw: {row.text!r}"
+            )
+            # the substantive claim survives stripping - it isn't reduced to nothing
+            assert row.text.strip() != ""
+
+    def test_tag_raw_is_unchanged_and_exact(self, prov_session):
+        ingest_tree(prov_session, BRAIN_ROOT, strict=True)
+        sunset = prov_session.execute(
+            select(Claim).where(Claim.slug == "2026-09-20-sunset-legacy-import")
+        ).scalar_one()
+        rows = prov_session.execute(select(Evidence).where(Evidence.claim_id == sunset.id)).scalars().all()
+        verbal = next(r for r in rows if r.tag_kind == TagKind.stakeholder_verbal)
+        assert verbal.tag_raw == "(stakeholder-verbal, Head of Support, 2026-09-15)"
+        # the claim text is still present and substantive, just without the tag trailing it
+        assert "support lead" in verbal.text.lower()
+        assert verbal.tag_raw not in verbal.text
+
+    def test_reingesting_an_already_ingested_tree_keeps_stripped_text(self, prov_session):
+        ingest_tree(prov_session, BRAIN_ROOT, strict=True)
+        second = ingest_tree(prov_session, BRAIN_ROOT, strict=True)
+        assert second.ingested == 0  # unchanged files are skipped, not rewritten
+        rows = prov_session.execute(select(Evidence)).scalars().all()
+        for row in rows:
+            assert not row.text.endswith(row.tag_raw)
+
+    def test_rebuild_corrects_stale_raw_text_left_by_an_older_ingest(self, tmp_brain: Path, prov_session):
+        """Simulate a database populated by the pre-fix `_write_claim_body` (which
+        stored the raw row, tag and all): the file on disk is unchanged (same
+        body_sha256), so a plain re-ingest's skip-unchanged fast path would never
+        revisit it - only `rebuild()` (wipe + fresh ingest) can correct it, per the
+        docstring on that fast path in `ingest_tree`."""
+        rebuild(prov_session, tmp_brain)
+        sunset = prov_session.execute(
+            select(Claim).where(Claim.slug == "2026-09-20-sunset-legacy-import")
+        ).scalar_one()
+        row = prov_session.execute(
+            select(Evidence).where(Evidence.claim_id == sunset.id, Evidence.tag_kind == TagKind.stakeholder_verbal)
+        ).scalar_one()
+
+        # Corrupt the stored text back to the old (raw-row) shape, same claim, same
+        # body_sha256 on the Claim - exactly what a legacy row looks like.
+        row.text = row.text + " " + row.tag_raw
+        prov_session.commit()
+        assert row.text.endswith(row.tag_raw)  # sanity: the corruption took
+
+        # A plain re-ingest is not expected to fix this (unchanged hash -> skipped).
+        reingest_report = ingest_tree(prov_session, tmp_brain, strict=True)
+        assert reingest_report.skipped_unchanged == reingest_report.files_seen
+        stale = prov_session.execute(select(Evidence).where(Evidence.id == row.id)).scalar_one()
+        assert stale.text.endswith(stale.tag_raw)  # still stale - documents the limit
+
+        # rebuild() wipes and re-ingests fresh, which does fix it. Clear the identity
+        # map first: rebuild's raw `delete(...)` statements bypass the ORM, so the
+        # `row`/`stale` objects above are now stale Python references to rows that no
+        # longer exist - without expiring them, SQLite's rowid reuse after DELETE can
+        # collide with those cached identities once ingest_tree re-adds a Claim/Evidence
+        # under the same id and warns about it (a session-hygiene artifact of this test
+        # re-using one session across two rebuilds, not a defect in ingest.py itself).
+        prov_session.expunge_all()
+        rebuild(prov_session, tmp_brain)
+        fixed = prov_session.execute(
+            select(Evidence).where(
+                Evidence.claim_id.in_(
+                    select(Claim.id).where(Claim.slug == "2026-09-20-sunset-legacy-import")
+                ),
+                Evidence.tag_kind == TagKind.stakeholder_verbal,
+            )
+        ).scalar_one()
+        assert not fixed.text.endswith(fixed.tag_raw)
+
+
 class TestComputedTagResolution:
     def test_unresolved_without_a_lookup(self, prov_session):
         ingest_tree(prov_session, BRAIN_ROOT, strict=True)
