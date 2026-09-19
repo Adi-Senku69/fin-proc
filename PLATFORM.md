@@ -225,3 +225,75 @@ claims that must wear provenance tags.
 The other seven capability domains from the reference catalogue. Multi-user and auth. A web interface.
 Vector search or embeddings, which the file-plus-index design exists to avoid. Guardrail middleware,
 still deferred. None of these are blocked by this architecture; all are noise until P0 to P2 stand up.
+
+---
+
+## 12. The brain writes back (phase B)
+
+Status: contract, 2026-09-19. Until now everything flowed **out** of the brain: parse, validate, index,
+drive the plan. Nothing wrote to it. Every record was hand-authored, `ingestion/` was empty, and the AI's
+own output landed in database tables that can never become a record. That is a filing system with good
+locks and nothing filing. This phase closes the loop.
+
+### 12.1 The rule that makes this safe
+
+We already know the answer, because the revenue proposal established it: **the model proposes, a named
+human confirms, and nothing unconfirmed reaches a number.** Applied to the brain:
+
+> Anything the AI writes lands at `pending` (decisions) or `open` (hypotheses), never `decided`. Only a
+> `decided` record carries a quantified effect into the plan, so a drafted record changes no figure until
+> a person promotes it.
+
+The write-time hook validates a drafted file exactly as it validates a hand-written one. **The model
+cannot write a record that would fail the check**, so an unsourced claim is refused at the moment of
+writing rather than discovered later.
+
+### 12.2 Why files, not a proposals table
+
+A drafted record is a real markdown file in git. It diffs, it reviews, it survives without our software,
+and a person promotes it by editing one line. A parallel proposals table would recreate the split this
+phase exists to remove.
+
+### 12.3 Hard limits on the writer
+
+1. **Path confinement.** It may write only under `brain/`, only into a modelled collection, and only to
+   a filename matching that collection's pattern. Any path outside is refused, including via `..`.
+2. **Never overwrite a decided record.** A `decided` decision is superseded by a new file that links
+   back, never edited. The writer refuses in-place modification of a decided or refuted record.
+3. **Validate before writing, not after.** Render, run the full validator on the rendered text, and
+   write only if it is error-free. A rejected draft returns its findings and touches no disk.
+4. **Status is not the model's to choose.** The writer sets it, from the collection and the caller, and
+   ignores any status the model supplies.
+5. **Every claim wears a tag.** Same closed enum, same parser. A draft citing raw material must point at
+   a real file under `source/` or `ingestion/`.
+
+### 12.4 What the platform does with this
+
+| Capability | Writes | Status on write |
+|---|---|---|
+| Ingest raw material (interview, meeting, market note) | `ingestion/<collection>/YYYY-MM-DD-<slug>.md` | n/a, a record not a judgement |
+| Environmental scan | `ingestion/market/...` instead of database-only notes | n/a |
+| Draft a decision from a question | `decisions/YYYY-MM-DD-<slug>.md` | `pending` |
+| Draft hypotheses for a feature or an assumption | `hypotheses/<feature>.md` | `open` |
+| **The sweep** | a maintenance record listing what it found | n/a |
+
+### 12.5 The sweep is what makes it think
+
+A periodic pass that reads the brain and reports what has gone stale, rather than waiting to be asked:
+
+- decided decisions whose **reversal condition** may have tripped, checked against the engine where the
+  condition names a figure the engine holds
+- hypotheses still `open` well past the decision they were meant to test
+- evidence whose path-typed tag points at a file that no longer exists
+- decisions with no evidence from any source newer than the decision itself
+
+It proposes; it never promotes. Its output is a record like any other, and a human acts on it.
+
+### 12.6 Phases
+
+| Phase | Work | Done when |
+|---|---|---|
+| B1 | The write substrate: render, validate-before-write, path confinement, refusal to overwrite | A drafted record that would fail validation is refused and writes nothing |
+| B2 | Ingestion of raw material, and the scan writing records instead of database-only notes | A transcript becomes a tagged ingestion record a decision can cite |
+| B3 | Drafting decisions and hypotheses from a question | A draft lands at `pending`, drives no figure, and a human promotes it |
+| B4 | The sweep | It finds a tripped reversal condition on the illustrative data and reports it |
