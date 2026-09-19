@@ -59,7 +59,7 @@ from sqlalchemy.orm import Session
 
 from nvplan import config
 from nvplan.ai import agents, prompts
-from nvplan.ai.context import ContextPolicy, make_backend
+from nvplan.ai.context import SKILLS_SOURCE, ContextPolicy, make_backend
 from nvplan.ai.tools import AiRunContext, SessionFactory, make_read_tools, make_write_tools
 from nvplan.db.models import AiRecord, AiStatus, Parameter, PlanValue, Touchpoint
 from nvplan.services.trace import trace_derivation
@@ -612,18 +612,25 @@ def build_assistant_agent(
     policy: ContextPolicy | None = None,
 ):
     """One deep agent for the conversational view: read tools + the proposal gate, the literal
-    system prompt, ``AssistantAnswer`` as structured output, and the same context/audit stack
-    the three formal touchpoints get (``nvplan.ai.agents._agent_middleware``)."""
+    system prompt, ``AssistantAnswer`` as structured output, the same context/audit stack the
+    three formal touchpoints get (``nvplan.ai.agents._agent_middleware``), and its own skills
+    (the strategy cluster + the citation method - ``nvplan.ai.context.SKILL_SURFACE``'s
+    "assistant" surface): the assistant is the only surface built to invoke them, and unlike the
+    three touchpoints it carries no hardcoded skill path of its own in its authored system
+    prompt, so it discovers its skill(s) entirely through the "Skills System" index this adds."""
     from deepagents import create_deep_agent
 
     ctx = extra_context if extra_context is not None else AiRunContext()
-    backend = make_backend()
+    # A private backend, pruned to the assistant's own skills (nvplan.ai.context.make_backend) -
+    # so its index carries the citation method and the strategy cluster, not the touchpoints'.
+    backend = make_backend(surface="assistant")
     return create_deep_agent(
         model=model,
         tools=assistant_tools(session_factory, ctx),
         system_prompt=prompts.ASSISTANT_ASK_SYSTEM,
         response_format=ToolStrategy(AssistantAnswer),
         backend=backend,
+        skills=[SKILLS_SOURCE],
         middleware=agents._agent_middleware(policy, model=model, backend=backend, ctx=ctx),
         name="nvplan-assistant",
     )

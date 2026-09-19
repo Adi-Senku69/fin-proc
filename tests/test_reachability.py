@@ -12,8 +12,16 @@ it never checked that anything could load them. This file is the missing check, 
 2. Skill reachability: which agents pass a skills source at all (determined by inspecting the
    builder's own source, not by assuming "skills=" is there because it looks like it should be),
    and whether that matches an explicit, asserted-as-data mapping of which skill is FOR which
-   surface. Where inspection contradicts the mapping, the assertion is marked xfail(strict=True)
-   naming exactly what to wire up - the gap stays visible in the suite instead of disappearing.
+   surface (nvplan.ai.context.SKILL_SURFACE - imported here as INTENDED_SKILL_SURFACE rather
+   than duplicated, so this file asserts against the real mapping instead of a hand-kept copy
+   that could drift from it). The gap this file originally caught - the assistant passing no
+   skills source at all - is now closed (build_assistant_agent passes
+   skills=[SKILLS_SOURCE], scoped to its own skills via its own private backend - see
+   nvplan/ai/assistant.py and nvplan/ai/context.py:make_backend); fixing that half without
+   scoping the touchpoints would have left every touchpoint still carrying the other nine
+   skills' index entries as noise, so build_touchpoint_agent/touchpoint_subagents were scoped
+   too (nvplan/ai/context.py:skills_for_surface / skills_index_route /
+   make_shared_touchpoint_backend).
 
 Nothing here builds a real model or calls the Anthropic API: skill reachability is decided by
 static inspection of builder source (`inspect.getsource`), and tool reachability by constructing
@@ -25,12 +33,11 @@ from __future__ import annotations
 import inspect
 import re
 
-import pytest
 from langchain_core.tools import BaseTool
 
 from nvplan.ai.agents import _TOUCHPOINT_TOOLS, build_advisor, build_touchpoint_agent, touchpoint_subagents
 from nvplan.ai.assistant import ASSISTANT_READ_TOOLS, ASSISTANT_WRITE_TOOLS, assistant_tools, build_assistant_agent
-from nvplan.ai.context import SKILLS_DIR, SKILL_NAMES
+from nvplan.ai.context import SKILLS_DIR, SKILL_NAMES, SKILL_SURFACE
 from nvplan.ai.tools import AiRunContext, make_read_tools, make_write_tools, record_proposal
 from test_ai_fixtures import ai_db  # noqa: F401 (fixture)
 
@@ -130,41 +137,56 @@ def test_assistant_tools_actually_built_match_the_declared_sets(ai_db):
 
 
 def _passes_skills_source(func) -> bool:
-    """True when func's OWN source hands SKILLS_SOURCE to create_deep_agent - as the `skills=`
-    kwarg, or as one subagent spec's `"skills"` key. Inspected rather than assumed: the point of
+    """True when func's OWN source hands a skills SOURCE to create_deep_agent - as the
+    `skills=` kwarg (the standalone builders' unchanged `skills=[SKILLS_SOURCE]`, pruned per
+    surface by the private backend each of them now builds - see nvplan/ai/context.py's
+    make_backend(surface=...)), or as one subagent spec's own `"skills"` key (the shared-backend
+    case, where the source itself has to be the thing that varies per subagent - see
+    nvplan/ai/context.py's skills_index_route / make_shared_touchpoint_backend, and
+    touchpoint_subagents' own docstring for why). Inspected rather than assumed: the point of
     this file is that a call site can look wired (it builds, it has a `backend=`, a
     `system_prompt=`, tools, everything else an agent needs) while simply never mentioning
     skills at all, and nothing about its shape says so short of reading it."""
     src = inspect.getsource(func)
     return bool(re.search(r"skills\s*=\s*\[\s*SKILLS_SOURCE\s*\]", src)) or bool(
-        re.search(r'"skills"\s*:\s*\[\s*SKILLS_SOURCE\s*\]', src)
+        re.search(r'"skills"\s*:\s*\[\s*skills_index_route\(', src)
     )
 
 
-def test_skills_source_is_the_whole_directory_not_filtered_per_touchpoint():
-    """SKILLS_SOURCE ("/skills/") is the entire skills directory, never one skill each - so any
-    builder that passes it reaches every directory under SKILLS_DIR, not just its "own" skill.
-    Confirmed by inspection (not assumed) for the three builders that do pass it; cross-checked
-    against tests/test_ai_skills.py::test_skill_index_in_system_prompt_and_read_file_returns_skill,
-    which shows every SKILL_NAMES entry landing in ONE touchpoint agent's system prompt."""
+def test_every_skill_owning_builder_passes_a_scoped_skills_source():
+    """build_touchpoint_agent, touchpoint_subagents and build_assistant_agent each pass a
+    skills source scoped to their own surface's skills, never the whole directory undifferentiated
+    (nvplan/ai/context.py: make_backend(surface=...) for the two standalone builders,
+    skills_index_route(...) per subagent for touchpoint_subagents - see _passes_skills_source's
+    own docstring for which mechanism each uses and why they differ). Confirmed by inspection,
+    not assumed.
+
+    build_advisor itself passes none of its own: nvplan.ai.context.SKILL_SURFACE maps no skill
+    to an "advisor" surface - it only orchestrates the three touchpoints (each of which reads
+    its own skill as a subagent, already covered above) and does no strategy analysis or
+    citation-checked answering itself, so it has nothing of its own to scope."""
     assert _passes_skills_source(build_touchpoint_agent)
     assert _passes_skills_source(touchpoint_subagents)
-    assert _passes_skills_source(build_advisor)
+    assert _passes_skills_source(build_assistant_agent)
+    assert not _passes_skills_source(build_advisor)
 
 
 def test_every_skill_on_disk_is_reachable_by_at_least_one_agent():
     """Every directory under SKILLS_DIR must be readable by SOME agent-building call site.
-    Today that is true for all of them, because build_touchpoint_agent / touchpoint_subagents /
-    build_advisor all load the whole directory (previous test) - a skill dir that no builder's
-    source mentioned at all, directly or via the whole-directory source, would be truly dead
-    code with no path to any agent."""
+
+    Reachability is no longer "true for all of them because one builder loads the whole
+    directory" (that was the noise this suite's fix removed) - it is computed from the real
+    mapping (SKILL_SURFACE) and whether the surface that owns each skill has a builder that
+    passes a skills source at all (previous test). A skill dir that no builder's source
+    mentioned at all - directly, or via its surface's scoped source - would be truly dead code
+    with no path to any agent."""
     on_disk = {p.name for p in SKILLS_DIR.iterdir() if p.is_dir()}
-    reachable = set(SKILL_NAMES) if _passes_skills_source(build_touchpoint_agent) else set()
+    reachable = {skill for skill, surface in SKILL_SURFACE.items() if _passes_skills_source(_SURFACE_BUILDER[surface])}
     orphans = on_disk - reachable
     assert not orphans, (
         f"skill dir(s) {sorted(orphans)} exist under {SKILLS_DIR} but no agent-building call "
-        f"site passes a skills source that would reach them - add skills=[SKILLS_SOURCE] to "
-        f"whichever builder in nvplan/ai/agents.py or nvplan/ai/assistant.py should own them"
+        f"site passes a skills source that would reach them - add its surface to "
+        f"nvplan/ai/context.py:SKILL_SURFACE and make sure that surface's builder passes one"
     )
 
 
@@ -173,24 +195,15 @@ def test_every_skill_on_disk_is_reachable_by_at_least_one_agent():
 # disk, both directions) - not duplicated here.
 
 
-# --------------------------------------------------------------------------- 5: relevance, as data + the xfail
+# --------------------------------------------------------------------------- 5: relevance, as data (no more xfail)
 
-#: Which surface each skill is FOR - a deliberate decision, not a fact derived from where a
-#: skill happens to be reachable today (every touchpoint/advisor builder loads the whole
-#: directory, so "reachable" alone would rubber-stamp any mapping). Adding a skill on disk
-#: without adding a line here fails test_every_skill_has_an_intended_surface below.
-INTENDED_SKILL_SURFACE: dict[str, str] = {
-    "env-scan-54-positions": "env_scan",
-    "revenue-proposal-method": "revenue_proposal",
-    "deviation-explanation-method": "deviation_explanation",
-    "strategy-lean-canvas": "assistant",
-    "strategy-monetization": "assistant",
-    "strategy-porters-five-forces": "assistant",
-    "strategy-positioning": "assistant",
-    "strategy-product-vision": "assistant",
-    "strategy-swot": "assistant",
-    "assistant-citation-method": "assistant",
-}
+#: Which surface each skill is FOR - the real mapping (nvplan.ai.context.SKILL_SURFACE), asserted
+#: against directly rather than duplicated as a second, driftable copy: adding a skill on disk
+#: without adding a line to SKILL_SURFACE itself now fails test_every_skill_has_an_intended_surface
+#: below, the same as it would have against a hand-kept copy - but there is only one place left to
+#: update, and every skills= consumer (nvplan/ai/context.py's make_backend /
+#: make_shared_touchpoint_backend) already reads that same dict.
+INTENDED_SKILL_SURFACE: dict[str, str] = SKILL_SURFACE
 
 #: The builder that constructs the named surface's agent, for the skills-source check.
 _SURFACE_BUILDER = {
@@ -212,8 +225,9 @@ def test_every_skill_has_an_intended_surface():
 def test_touchpoint_owned_skills_are_reachable_by_their_intended_surface():
     """The three touchpoint-owned skills (env-scan-54-positions, revenue-proposal-method,
     deviation-explanation-method) ARE reachable by the surface INTENDED_SKILL_SURFACE says owns
-    them, because build_touchpoint_agent passes the whole-directory skills source. This is the
-    half of the mapping that already holds; the contradicted half is the xfail below."""
+    them, because build_touchpoint_agent passes a skills source scoped to that very surface. This
+    is the half of the mapping that already held before the fix; the assistant half (once
+    xfailing, now fixed) is the next test."""
     touchpoint_owned = {s: surf for s, surf in INTENDED_SKILL_SURFACE.items() if surf != "assistant"}
     assert touchpoint_owned, "expected at least one touchpoint-owned skill to check against"
     for skill, surface in touchpoint_owned.items():
@@ -224,22 +238,15 @@ def test_touchpoint_owned_skills_are_reachable_by_their_intended_surface():
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "build_assistant_agent (nvplan/ai/assistant.py) passes no skills= argument to "
-        "create_deep_agent at all, so the six strategy-* skills and assistant-citation-method - "
-        "mapped to the assistant surface in INTENDED_SKILL_SURFACE because it is, per this "
-        "module's own framing, the only surface built to invoke them - are unreachable by the "
-        "one agent that owns them. They ARE reachable by build_touchpoint_agent / "
-        "touchpoint_subagents / build_advisor (whole-directory skills source), which is noise, "
-        "not the fix: none of those three surfaces does strategy analysis or answers free-form "
-        "questions. Fix: add skills=[SKILLS_SOURCE] to build_assistant_agent's "
-        "create_deep_agent(...) call, the same one line every other builder already has."
-    ),
-)
 def test_assistant_owned_skills_are_reachable_by_the_assistant():
-    """The miss this file exists to catch, still open. See the xfail reason for the fix."""
+    """The miss this file exists to catch, now fixed: build_assistant_agent
+    (nvplan/ai/assistant.py) passes skills=[SKILLS_SOURCE] to create_deep_agent, backed by its
+    own private backend pruned to just the assistant's skills (nvplan/ai/context.py:
+    make_backend(surface="assistant")), so the six strategy-* skills and
+    assistant-citation-method - mapped to the assistant surface in INTENDED_SKILL_SURFACE
+    because it is, per this module's own framing, the only surface built to invoke them - are
+    now reachable by the one agent that owns them. This was the xfail this test used to carry;
+    it now passes outright."""
     assistant_owned = {s: surf for s, surf in INTENDED_SKILL_SURFACE.items() if surf == "assistant"}
     assert assistant_owned, "expected at least one assistant-owned skill to check against"
     unreachable = [

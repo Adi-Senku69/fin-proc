@@ -40,9 +40,9 @@ the route prefix, so the route root is the ``skills`` directory itself.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from langchain_core.language_models import BaseChatModel
 
@@ -69,6 +69,48 @@ SKILL_NAMES: tuple[str, ...] = (
     "assistant-citation-method",
 )
 
+#: Which surface each skill is FOR - the one real mapping every ``skills=`` consumer builds its
+#: source from (``skills_for_surface`` / ``make_backend`` / ``make_shared_touchpoint_backend``
+#: below), rather than each builder reaching for the whole directory. Mirrored by
+#: ``tests/test_reachability.py``'s ``INTENDED_SKILL_SURFACE``, which asserts against this dict
+#: directly instead of duplicating it as separate, driftable data.
+SKILL_SURFACE: dict[str, str] = {
+    "env-scan-54-positions": "env_scan",
+    "revenue-proposal-method": "revenue_proposal",
+    "deviation-explanation-method": "deviation_explanation",
+    "strategy-lean-canvas": "assistant",
+    "strategy-monetization": "assistant",
+    "strategy-porters-five-forces": "assistant",
+    "strategy-positioning": "assistant",
+    "strategy-product-vision": "assistant",
+    "strategy-swot": "assistant",
+    "assistant-citation-method": "assistant",
+}
+
+#: Every surface named in SKILL_SURFACE, once each.
+SURFACES: tuple[str, ...] = tuple(sorted(set(SKILL_SURFACE.values())))
+
+
+def skills_for_surface(surface: str) -> tuple[str, ...]:
+    """Every skill name owned by ``surface`` (SKILL_SURFACE), in SKILL_NAMES order."""
+    if surface not in SURFACES:
+        raise ValueError(f"unknown surface {surface!r}; expected one of {SURFACES}")
+    return tuple(name for name in SKILL_NAMES if SKILL_SURFACE[name] == surface)
+
+
+def skills_index_route(surface: str) -> str:
+    """The scoped ``skills=`` SOURCE for one surface's index ONLY - ``"/skills-index/<surface>/"``
+    - distinct from the canonical, unscoped ``SKILLS_SOURCE`` ("/skills/") that every touchpoint's
+    authored system prompt already hardcodes as ``read_file("/skills/<skill>/SKILL.md")``
+    (``nvplan.ai.prompts``) and that ``nvplan.ai.fake.SKILL_PATHS`` scripts against. Used only by
+    ``touchpoint_subagents``/``make_shared_touchpoint_backend``, where several subagents share one
+    backend (see their own docstrings for why a distinct *route* per surface, not a distinct
+    backend, is the only lever available there)."""
+    if surface not in SURFACES:
+        raise ValueError(f"unknown surface {surface!r}; expected one of {SURFACES}")
+    return f"/skills-index/{surface}/"
+
+
 READ_ONLY_FS_TOOLS: list[str] = ["read_file", "ls", "grep"]
 
 
@@ -94,14 +136,93 @@ class ContextPolicy:
 DEFAULT_POLICY = ContextPolicy()
 
 
-def make_backend(skills_dir: Path | None = None) -> Any:
-    """In-memory state for everything, the repo's skills directory read-only under /skills/."""
+class _ScopedSkillsBackend:
+    """Wraps a real backend, restricting what ``ls``/``als`` ever LIST to a named allow-list of
+    directory names - the only filter this closes.
+
+    Why a wrapper and not a deepagents argument: checked against the installed deepagents
+    (0.7.13) - ``create_deep_agent(skills=...)``, a ``SubAgent``'s own ``"skills"`` key, and
+    ``SkillsMiddleware(sources=...)`` itself all accept only SOURCE PATHS (a directory whose
+    immediate ``ls()`` children are the skill directories - see
+    ``deepagents/middleware/skills.py``'s own docstring, "Sources point to skill directories in
+    the backend"). None of them takes a skill NAME or an allow-list; several sources can be
+    passed, but each one is still a whole directory, and every skill on disk here shares exactly
+    one parent (``SKILLS_DIR``), so there is no combination of real source paths that names a
+    proper subset of siblings. This is the closest correct thing given that constraint: a normal
+    ``BackendProtocol`` implementer (the same pattern ``CompositeBackend``/``StateBackend``/
+    ``FilesystemBackend`` already are), not a new argument anywhere in deepagents.
+
+    Every other call (``download_files``, ``read_file``, ``grep``, ...) is untouched - delegated
+    to the wrapped backend via ``__getattr__`` - because by the time one of those is called, the
+    path in question already came from an ``ls()`` this wrapper already pruned."""
+
+    def __init__(self, backend: Any, allowed: Sequence[str]) -> None:
+        self._backend = backend
+        self._allowed = frozenset(allowed)
+
+    def _prune(self, result: Any) -> Any:
+        if result.entries is None:
+            return result
+        entries = [
+            e for e in result.entries if not e.get("is_dir") or Path(e["path"].rstrip("/")).name in self._allowed
+        ]
+        return replace(result, entries=entries)
+
+    def ls(self, path: str) -> Any:
+        return self._prune(self._backend.ls(path))
+
+    async def als(self, path: str) -> Any:
+        return self._prune(await self._backend.als(path))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._backend, name)
+
+
+def make_backend(surface: str | None = None, skills_dir: Path | None = None) -> Any:
+    """In-memory state for everything; the repo's skills directory read-only under
+    ``SKILLS_SOURCE`` ("/skills/") - the whole directory when ``surface`` is omitted (unchanged
+    default, still what a caller with no per-surface concept of its own gets), or pruned to just
+    ``surface``'s own skills (``skills_for_surface`` / ``_ScopedSkillsBackend``) when given. The
+    route path itself never changes, so the literal ``"/skills/<skill>/SKILL.md"`` paths
+    ``nvplan.ai.prompts`` already hardcodes keep resolving unchanged either way - only which
+    skills the agent's own INDEX (and its own ``ls`` tool) ever lists is pruned.
+
+    Used by the STANDALONE builders (``build_touchpoint_agent``, ``build_assistant_agent``),
+    each of which owns its own backend instance - see ``make_shared_touchpoint_backend`` for the
+    advisor's subagents, which share one backend and need a different lever."""
     from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 
-    return CompositeBackend(
-        default=StateBackend(),
-        routes={SKILLS_SOURCE: FilesystemBackend(root_dir=skills_dir or SKILLS_DIR, virtual_mode=True)},
-    )
+    fs = FilesystemBackend(root_dir=skills_dir or SKILLS_DIR, virtual_mode=True)
+    skills_backend: Any = fs if surface is None else _ScopedSkillsBackend(fs, skills_for_surface(surface))
+    return CompositeBackend(default=StateBackend(), routes={SKILLS_SOURCE: skills_backend})
+
+
+def make_shared_touchpoint_backend(surfaces: Sequence[str], skills_dir: Path | None = None) -> Any:
+    """The advisor's own backend, shared with every touchpoint subagent it builds
+    (``touchpoint_subagents``): the canonical ``SKILLS_SOURCE`` route stays the WHOLE, unfiltered
+    directory (every subagent's authored system prompt hardcodes a literal
+    ``"/skills/<skill>/SKILL.md"`` ``read_file`` path - ``nvplan.ai.prompts`` - and that has to
+    keep resolving no matter which subagent is running), plus one additional, distinct
+    ``skills_index_route(surface)`` per surface in ``surfaces``, each pruned to just that
+    surface's own skills.
+
+    Why the canonical route can't itself be pruned per subagent here, unlike the standalone
+    builders' ``make_backend(surface=...)``: deepagents' subagent construction hands every
+    declarative ``SubAgent``'s ``SkillsMiddleware`` the SAME outer ``backend=`` the parent agent
+    was given (``deepagents/graph.py``'s subagent-building loop: `SkillsMiddleware(backend=backend,
+    sources=subagent_skills)`, always the one outer ``backend`` - never a per-subagent one). One
+    shared backend object can register a name only once, so scoping has to live at a distinct
+    *route* per surface instead - each subagent's own ``spec["skills"]`` names its own route
+    (``skills_index_route``), pruning only what THAT subagent's own "Skills System" index lists;
+    the shared, unpruned canonical route is what keeps every subagent's literal
+    ``read_file("/skills/<skill>/SKILL.md")`` call working regardless of which one is running."""
+    from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
+
+    fs = FilesystemBackend(root_dir=skills_dir or SKILLS_DIR, virtual_mode=True)
+    routes: dict[str, Any] = {SKILLS_SOURCE: fs}
+    for surface in surfaces:
+        routes[skills_index_route(surface)] = _ScopedSkillsBackend(fs, skills_for_surface(surface))
+    return CompositeBackend(default=StateBackend(), routes=routes)
 
 
 def build_context_middleware(policy: ContextPolicy | None, *, model: BaseChatModel, backend: Any) -> list[Any]:

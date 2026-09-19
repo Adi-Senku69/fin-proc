@@ -8,8 +8,16 @@ import re
 from sqlalchemy import select
 
 from nvplan.ai import build_advisor, build_touchpoint_agent, run_deviation_explanation, run_env_scan, run_revenue_proposal
-from nvplan.ai.agents import PromptCapture, touchpoint_subagents
-from nvplan.ai.context import SKILL_NAMES, SKILLS_DIR, SKILLS_SOURCE, make_backend
+from nvplan.ai.agents import TOUCHPOINTS, PromptCapture, touchpoint_subagents
+from nvplan.ai.context import (
+    SKILL_NAMES,
+    SKILLS_DIR,
+    SKILLS_SOURCE,
+    make_backend,
+    make_shared_touchpoint_backend,
+    skills_for_surface,
+    skills_index_route,
+)
 from nvplan.ai.fake import (
     SKILL_PATHS,
     FakeToolCallingModel,
@@ -84,8 +92,12 @@ def test_skill_index_in_system_prompt_and_read_file_returns_skill(ai_db):
     result = agent.invoke({"messages": [{"role": "user", "content": "propose 2027"}]}, config={"callbacks": [capture]})
 
     assert "Skills System" in capture.system_prompt
+    # scoped to revenue_proposal's own skill (nvplan.ai.context.SKILL_SURFACE) - not the other nine
+    assert "**revenue-proposal-method**" in capture.system_prompt
+    assert "/skills/revenue-proposal-method/SKILL.md" in capture.system_prompt
     for name in SKILL_NAMES:
-        assert f"**{name}**" in capture.system_prompt and f"/skills/{name}/SKILL.md" in capture.system_prompt
+        if name != "revenue-proposal-method":
+            assert f"**{name}**" not in capture.system_prompt
     assert "skills_metadata" not in result  # private state key: loaded by SkillsMiddleware, not returned
 
     skill_msg = next(m for m in result["messages"] if m.type == "tool" and m.tool_call_id == "skill-revenue_proposal")
@@ -118,8 +130,12 @@ def test_each_touchpoint_reads_its_skill_and_prompt_text_lists_skills(ai_db):
         for tp, rec in recs.items():
             r = s.get(AiRecord, rec.id)
             assert "Skills System" in r.prompt_text
+            # scoped to this touchpoint's own skill (SKILL_SURFACE) - not the other nine
+            own_skill = TOUCHPOINT_SKILL[tp]
+            assert f"**{own_skill}**" in r.prompt_text
             for name in SKILL_NAMES:
-                assert f"**{name}**" in r.prompt_text
+                if name != own_skill:
+                    assert f"**{name}**" not in r.prompt_text
             assert TOUCHPOINT_SYSTEM_PROMPTS[tp] in r.prompt_text
             # first model call asked for the skill; second call saw its content
             log = r.call_log_json
@@ -133,9 +149,19 @@ def test_each_touchpoint_reads_its_skill_and_prompt_text_lists_skills(ai_db):
 def test_advisor_subagents_carry_skills(ai_db):
     factory, _ = ai_db
     fake = FakeToolCallingModel(responses=[])
-    specs = touchpoint_subagents(factory, AiRunContext(), backend=make_backend(), model=fake)
-    assert [s["skills"] for s in specs] == [[SKILLS_SOURCE]] * 3
+    backend = make_shared_touchpoint_backend(TOUCHPOINTS)
+    specs = touchpoint_subagents(factory, AiRunContext(), backend=backend, model=fake)
+    # each subagent's own scoped index route, not the shared whole-directory SKILLS_SOURCE
+    assert [s["skills"] for s in specs] == [[skills_index_route(tp)] for tp in TOUCHPOINTS]
     assert all("ContextAuditMiddleware" in {m.name for m in s["middleware"]} for s in specs)
+    # each route on the shared backend lists only that touchpoint's own skill
+    for tp in TOUCHPOINTS:
+        listing = backend.ls(skills_index_route(tp))
+        assert {e["path"].split("/")[-2] for e in listing.entries} == set(skills_for_surface(tp))
+    # the canonical, unscoped route is still there and unfiltered - every touchpoint's authored
+    # system prompt hardcodes a literal read_file("/skills/<skill>/SKILL.md") that has to keep
+    # resolving no matter which subagent is running (nvplan.ai.prompts)
+    assert {e["path"].rstrip("/").rsplit("/", 1)[-1] for e in backend.ls(SKILLS_SOURCE).entries} == set(SKILL_NAMES)
     advisor = build_advisor(fake, factory)
     task = advisor.nodes["tools"].bound.tools_by_name["task"]
     assert "- revenue-proposal:" in task.description

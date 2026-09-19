@@ -62,7 +62,14 @@ from sqlalchemy import select
 from nvplan import config
 from nvplan.ai import prompts
 from nvplan.ai.audit import ContextAuditMiddleware
-from nvplan.ai.context import SKILLS_SOURCE, ContextPolicy, build_context_middleware, make_backend
+from nvplan.ai.context import (
+    SKILLS_SOURCE,
+    ContextPolicy,
+    build_context_middleware,
+    make_backend,
+    make_shared_touchpoint_backend,
+    skills_index_route,
+)
 from nvplan.ai.figures import ExplanationRejected, check_explanation, plan_vs_actual
 from nvplan.ai.schemas import TOUCHPOINT_SCHEMAS, DeviationExplanation, EnvScanResult, RevenueProposal
 from nvplan.ai.tools import (
@@ -377,7 +384,9 @@ def build_touchpoint_agent(
     from deepagents import create_deep_agent
 
     ctx = extra_context if extra_context is not None else AiRunContext()
-    backend = make_backend()
+    # A private backend, pruned to this touchpoint's own skill (nvplan.ai.context.make_backend) -
+    # so its "Skills System" index carries only its own method, not the other nine.
+    backend = make_backend(surface=touchpoint)
     return create_deep_agent(
         model=model,
         tools=touchpoint_tools(touchpoint, session_factory, ctx),
@@ -398,8 +407,17 @@ def touchpoint_subagents(
     model: BaseChatModel,
     policy: ContextPolicy | None = None,
 ) -> list[dict[str, Any]]:
-    """The three touchpoints as deepagents ``SubAgent`` dicts (same skills, context stack and
-    audit as the standalone agents; ``model`` is the subagents' model)."""
+    """The three touchpoints as deepagents ``SubAgent`` dicts (same context stack and audit as
+    the standalone agents; ``model`` is the subagents' model).
+
+    Each subagent's own ``"skills"`` names its OWN scoped index route
+    (``nvplan.ai.context.skills_index_route``), not the shared whole-directory ``SKILLS_SOURCE``:
+    ``backend`` is the ONE object every subagent's ``SkillsMiddleware`` is built against
+    (deepagents hands every declarative ``SubAgent`` the parent's own ``backend=``, never a
+    per-subagent one - see ``make_shared_touchpoint_backend``'s docstring), so the per-surface
+    scoping has to live in which route each spec names, not in the backend itself. ``backend``
+    must therefore be one built by ``make_shared_touchpoint_backend(TOUCHPOINTS)`` (or a superset
+    of it) for these routes to resolve."""
     ctx = ctx if ctx is not None else AiRunContext()
     subagents: list[dict[str, Any]] = []
     for tp in TOUCHPOINTS:
@@ -409,7 +427,7 @@ def touchpoint_subagents(
             "system_prompt": prompts.TOUCHPOINT_SYSTEM_PROMPTS[tp],
             "tools": touchpoint_tools(tp, session_factory, ctx),
             "response_format": ToolStrategy(TOUCHPOINT_SCHEMAS[tp]),
-            "skills": [SKILLS_SOURCE],
+            "skills": [skills_index_route(tp)],
             "middleware": _agent_middleware(policy, model=model, backend=backend, ctx=ctx),
             "model": model,
         }
@@ -424,10 +442,15 @@ def build_advisor(
     *,
     policy: ContextPolicy | None = None,
 ):
-    """One orchestrating deep agent with the three touchpoints as subagents."""
+    """One orchestrating deep agent with the three touchpoints as subagents.
+
+    The advisor itself owns no skill (``nvplan.ai.context.SKILL_SURFACE`` maps no skill to an
+    "advisor" surface - it delegates all real work to its subagents, which each read their own),
+    so it passes no ``skills=`` of its own; only ``touchpoint_subagents`` scopes one per
+    subagent, via the shared backend built by ``make_shared_touchpoint_backend``."""
     from deepagents import create_deep_agent
 
-    backend = make_backend()
+    backend = make_shared_touchpoint_backend(TOUCHPOINTS)
     ctx = ctx or AiRunContext(model_version=model_version(model))
     return create_deep_agent(
         model=model,
@@ -435,7 +458,6 @@ def build_advisor(
         system_prompt=prompts.ADVISOR_SYSTEM,
         subagents=touchpoint_subagents(session_factory, ctx, backend=backend, model=model, policy=policy),
         backend=backend,
-        skills=[SKILLS_SOURCE],
         middleware=_agent_middleware(policy, model=model, backend=backend, ctx=ctx),
         name="nvplan-advisor",
     )
