@@ -1,4 +1,4 @@
-"""Thin wrapper: ``uv run python scripts/demo.py [--db FILE] [--fake-ai]`` == ``uv run nvplan-demo``."""
+"""Thin wrapper: ``uv run python scripts/demo.py [--db FILE] [--live]`` == ``uv run nvplan-demo``."""
 
 from nvplan.api.demo import main
 

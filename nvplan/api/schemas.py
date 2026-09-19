@@ -148,6 +148,13 @@ class AiRecordDetailOut(AiRecordOut):
         description="One entry per model call: the literal system prompt + messages sent, the response, "
         "approx tokens, and summarization / eviction / cleared-tool-result markers.",
     )
+    total_usage: dict[str, int] | None = Field(
+        default=None,
+        description="Real provider token usage summed over every model call of the run "
+        "(input/output/total plus cache_read/cache_creation when reported), recomputed from call_log by "
+        "nvplan.ai.audit.total_usage. Empty mapping with the fake model (no usage metadata); null when "
+        "no call log was persisted.",
+    )
 
 
 class ConfirmIn(BaseModel):

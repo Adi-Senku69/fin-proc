@@ -64,9 +64,26 @@ we lack:
 
 | Coupling point | What it is |
 |---|---|
-| `nvplan/ai/agents.py::get_model` | 3-line lazy constructor, the only place a real model is built |
-| `nvplan/config.py::AI_MODEL` | the model id string |
+| `nvplan/ai/agents.py::build_chat_model` | the only place a real client is constructed |
+| `nvplan/config.py` | `AI_MODEL`, `AI_EFFORT`, `AI_MAX_TOKENS`, `AI_BETAS` |
 | `nvplan/ai/context.py` | `AnthropicPromptCachingMiddleware`, self-disabling on other providers |
+
+`build_chat_model` sends the model id, token ceiling, effort and any beta flags, and nothing else.
+Opus 5 rejects sampling parameters and a thinking budget with a 400, and runs adaptive thinking by
+default, so none of those are ever set.
+
+**Correction, found against the live API on 2026-09-19.** An earlier draft of this section called
+`ANTHROPIC_WORKSPACE_ID` informational, on the assumption that a workspace-scoped key routes itself.
+That was wrong for the key in use. An organization-level key returns:
+
+```
+400 invalid_request_error: This API key is not scoped to a workspace, so this request
+must include the anthropic-workspace-id header with the ID of the workspace to use.
+```
+
+The client does not read that variable for the Messages API, so `build_chat_model` forwards it as an
+`anthropic-workspace-id` default header whenever it is set, and omits it otherwise. Nothing live
+worked until this was added.
 
 Everything else in the AI layer talks to LangChain's `BaseChatModel`. That is the same seam the
 159 offline tests use to inject a fake model. Routing through a translation layer would cost:

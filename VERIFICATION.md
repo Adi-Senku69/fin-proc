@@ -110,5 +110,9 @@ field by field against the deterministic plan-vs-actual table before it is store
 
 1. Add a guard for the valorization rate when the fitted fixed part is near zero (5.2).
 2. Offer a joint α/v/β estimator as a selectable method, recorded in the derivation (5.1).
-3. Run the three touchpoints against the real model (`ANTHROPIC_API_KEY`) and review the prompts on output.
+3. ~~Run the three touchpoints against the real model and review the prompts on output.~~ **Done
+   2026-09-19.** All three ran against `claude-opus-5`. The revenue proposal and deviation explanation
+   passed live, with the explanation clearing the deterministic cross-check unaided. Prompt caching
+   measured at 31,968 of 42,517 input tokens served from cache on a five-call run, about 75%.
+   A live run of the full demo takes roughly 6 minutes against about 1 second with the scripted models.
 4. React trace-panel UI over the existing JSON endpoints (deferred by design).

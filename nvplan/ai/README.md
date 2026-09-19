@@ -141,9 +141,9 @@ with one scripted scenario per touchpoint, and the deviation script
 (`fake.ScriptedDeviationModel`) fills its contributions from the deterministic table it was shown
 (the `get_plan_vs_actual` tool result, or a `table=` handed in) unless a test scripts them
 explicitly to provoke a rejection. `fake.refusing_model()` scripts the refusal shape.
-`nvplan-demo` picks the real model when a credential is resolvable and the scripted fakes
-otherwise (`--fake-ai` forces the fakes) - note that since `.env` is loaded automatically, a key
-in `.env` is enough to make the plain `uv run nvplan-demo` spend money.
+`nvplan-demo` uses the scripted fakes by default and never goes live on its own. `--live` opts
+into the real model and is a hard error when no credential resolves, so a key sitting in `.env`
+can no longer make a plain `uv run nvplan-demo` spend money. `--fake-ai` is kept as a no-op alias.
 
 Note: deepagents auto-adds a `general-purpose` subagent (`task` tool) to every agent; it
 inherits the same tool set, so it cannot write anything the touchpoint itself cannot.

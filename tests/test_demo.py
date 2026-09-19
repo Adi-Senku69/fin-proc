@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import sys
 import time
 
+import pytest
 from sqlalchemy.orm import sessionmaker
 
+from nvplan.ai import agents
+from nvplan.ai.agents import MissingCredentials
+from nvplan.api import demo
 from nvplan.api.demo import main
 from nvplan.api.queries import table_counts
 from nvplan.db.session import get_engine
@@ -28,3 +33,52 @@ def test_demo_runs_with_fakes(tmp_path, capsys):
     assert counts["scenario"] == 9 and counts["ai_record"] == 3 and counts["parameter"] == 12
     assert counts["actual"] == 60 and counts["external_note"] >= 4
     assert elapsed < 30, f"demo took {elapsed:.1f}s"
+
+
+def _no_network(*args, **kwargs):  # any attempt to build the real model is a test failure
+    raise AssertionError("the demo tried to build the real model / go to the network")
+
+
+def test_demo_defaults_to_fakes_even_with_a_credential(tmp_path, monkeypatch, capsys):
+    """A plain ``nvplan-demo`` (no flags) must stay on the scripted path even with a key in the
+    environment - .env is auto-loaded at config import, so anything else is a silent bill."""
+    db = tmp_path / "default.db"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-a-real-key")
+    monkeypatch.setattr(agents, "build_chat_model", _no_network)
+    monkeypatch.setattr(sys, "argv", ["nvplan-demo", "--db", str(db)])
+    assert main() == 0  # argv path: no --live
+    out = capsys.readouterr().out
+    assert "SCRIPTED FAKE MODELS" in out and "REAL TOKENS" not in out
+    assert db.exists()
+
+
+def test_fake_ai_flag_is_an_accepted_no_op(tmp_path, monkeypatch, capsys):
+    db = tmp_path / "fakeflag.db"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-a-real-key")
+    monkeypatch.setattr(agents, "build_chat_model", _no_network)
+    monkeypatch.setattr(sys, "argv", ["nvplan-demo", "--db", str(db), "--fake-ai"])
+    assert main() == 0
+    assert "SCRIPTED FAKE MODELS" in capsys.readouterr().out
+
+
+def test_use_fake_ai_false_does_not_go_live(tmp_path, monkeypatch, capsys):
+    """``use_fake_ai=False`` is not an opt-in: only ``live=True`` is."""
+    db = tmp_path / "notlive.db"
+    monkeypatch.setattr(agents, "build_chat_model", _no_network)
+    monkeypatch.setattr(demo, "credentials_available", lambda: True)
+    assert demo.run_demo(str(db), use_fake_ai=False)["ai_record"] == 3
+    assert "SCRIPTED FAKE MODELS" in capsys.readouterr().out
+
+
+def test_live_without_credential_fails_fast(tmp_path, monkeypatch, capsys):
+    db = tmp_path / "live.db"
+    monkeypatch.setattr(demo, "credentials_available", lambda: False)
+    monkeypatch.setattr(agents, "build_chat_model", _no_network)
+    monkeypatch.setattr(sys, "argv", ["nvplan-demo", "--db", str(db), "--live"])
+    assert main() == 2  # non-zero, no silent fallback to the fakes
+    out = capsys.readouterr().out
+    assert "No Anthropic credential found" in out and "ANTHROPIC_API_KEY" in out
+    assert not db.exists()  # it failed before any work
+    # programmatic opt-in raises instead of falling back
+    with pytest.raises(MissingCredentials):
+        demo.run_demo(str(db), live=True)

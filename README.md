@@ -36,8 +36,8 @@ uv run pytest -q        # whole suite, no network needed (AI tests use scripted 
 ## Run the demo
 
 ```bash
-uv run nvplan-demo                  # fresh nvplan_demo.db, prints the whole story (< 30 s with fakes)
-uv run nvplan-demo --fake-ai        # force the scripted fakes even if a key is set
+uv run nvplan-demo                  # fresh nvplan_demo.db, prints the whole story (~1 s, scripted AI)
+uv run nvplan-demo --live           # opt into the real model; spends real tokens, takes minutes
 uv run python scripts/demo.py       # same thing
 ```
 
@@ -85,8 +85,10 @@ fakes through `app.state.model_factory` and never touch the network. The determi
 (plan, trace, statements, backtest, deviation, gate) does not depend on the AI layer at all.
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-uv run nvplan-demo          # real env scan, proposal and deviation explanation
+# put ANTHROPIC_API_KEY in .env (auto-loaded), or export it
+uv run nvplan-ai-check              # one cheap call: is the model reachable?
+uv run nvplan-demo --live           # real env scan, proposal and deviation explanation
+uv run pytest -m live               # the live test suite (deselected by default)
 ```
 
 ## Layout

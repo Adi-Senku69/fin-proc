@@ -31,6 +31,7 @@ from nvplan.ai import (
     MissingCredentials,
     ModelRefused,
     ProposalRejected,
+    audit,
     credential_hint,
     credentials_available,
     run_deviation_explanation,
@@ -243,7 +244,10 @@ def _register(app: FastAPI) -> None:
         if rec is None:
             raise LookupError(f"ai_record {record_id} not found")
         # The per-call audit log (nvplan.ai.audit) is only on the detail route; the list stays light.
-        return {**q.ai_record_dict(session, rec), "call_log": list(rec.call_log_json or [])}
+        # total_usage is recomputed from the persisted log, so records written before it existed work too.
+        call_log = list(rec.call_log_json or [])
+        return {**q.ai_record_dict(session, rec), "call_log": call_log,
+                "total_usage": audit.total_usage(call_log) if rec.call_log_json is not None else None}
 
     @app.post("/ai/records/{record_id}/confirm", response_model=S.ConfirmOut)
     def ai_confirm(record_id: int, body: S.ConfirmIn, session: Session = Depends(get_session)):

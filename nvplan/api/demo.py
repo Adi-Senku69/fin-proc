@@ -1,10 +1,14 @@
 """The story told live (PDF week 3): ingest -> plan -> trace -> backtest -> AI proposal ->
 human confirmation -> rerun -> statements -> deviation explanation -> row counts.
 
-``main(db_path="nvplan_demo.db", use_fake_ai=None)``: a fresh SQLite file every run.
-AI: the real model (``config.AI_MODEL`` via ``ANTHROPIC_API_KEY``) when a key is set and
-``use_fake_ai`` is not True; otherwise the scripted fakes of :mod:`nvplan.ai.fake`, which
-is stated loudly in the output. Everything else is deterministic.
+``main(db_path="nvplan_demo.db")``: a fresh SQLite file every run.
+AI: the scripted fakes of :mod:`nvplan.ai.fake` **by default** - offline, free, ~1 s - which is
+stated loudly in the output. The real model (``config.AI_MODEL`` via ``ANTHROPIC_API_KEY``) is
+only used when the caller explicitly opts in with ``--live`` / ``run_demo(..., live=True)``, and
+then the banner says that real tokens are being spent. A present credential alone never makes the
+demo go live: ``nvplan.config`` loads ``.env`` at import, so that would be a silent bill.
+``--live`` without a resolvable credential fails fast with the credential hint (exit code 2)
+instead of quietly falling back to the fakes. Everything else is deterministic.
 
 The deviation explanation needs a plan for a year that also has actuals. The live
 plan covers 2026-2030 (no actuals yet), so step 7 persists one extra plan run that
@@ -17,7 +21,6 @@ by ``scenario_id`` when you want the live one.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import tempfile
 import time
@@ -31,6 +34,7 @@ from sqlalchemy.orm import sessionmaker
 
 from nvplan import config
 from nvplan.ai import run_deviation_explanation, run_env_scan, run_revenue_proposal
+from nvplan.ai.agents import MissingCredentials, credential_hint, credentials_available
 from nvplan.ai.fake import scripted_deviation_model, scripted_env_scan_model, scripted_revenue_model
 from nvplan.ai.tools import plan_vs_actual
 from nvplan.api import queries as q
@@ -142,30 +146,51 @@ def run_backtest_year_plan(session, year: int, created_by: str, window_len: int 
 # --------------------------------------------------------------------------- main
 
 
-def main(db_path: str | None = None, use_fake_ai: bool | None = None, out: Callable[[str], None] = print) -> int:
-    """Console entry point (``nvplan-demo [--db FILE] [--fake-ai]``); returns the exit code 0.
+def main(db_path: str | None = None, use_fake_ai: bool | None = None, live: bool = False,
+         out: Callable[[str], None] = print) -> int:
+    """Console entry point (``nvplan-demo [--db FILE] [--live]``); 0 on success, 2 without a credential.
 
-    Called with ``db_path`` it skips argv parsing (tests). ``use_fake_ai=None`` = fakes unless
-    ``ANTHROPIC_API_KEY`` is set."""
+    Called with ``db_path`` it skips argv parsing (tests). The scripted fakes are the default; only
+    ``--live`` / ``live=True`` uses the real model, and then a missing credential is a fast, loud
+    failure (exit code 2) rather than a silent fallback."""
     if db_path is None:  # console script: parse argv
         p = argparse.ArgumentParser(prog="nvplan-demo", description="End-to-end NewVision planning demo.")
         p.add_argument("--db", default="nvplan_demo.db", help="SQLite file (recreated)")
-        p.add_argument("--fake-ai", action="store_true", help="use the scripted fake models even if a key is set")
+        p.add_argument("--live", action="store_true",
+                       help=f"opt into the real model ({config.AI_MODEL}): SPENDS REAL TOKENS and takes minutes; "
+                            "without a credential it fails instead of falling back")
+        p.add_argument("--fake-ai", action="store_true",
+                       help="accepted no-op alias: the scripted fake models are the default now")
         args = p.parse_args(sys.argv[1:])
-        db_path, use_fake_ai = args.db, (True if args.fake_ai else use_fake_ai)
-    run_demo(db_path, use_fake_ai=use_fake_ai, out=out)
+        db_path, live = args.db, (live or args.live)
+        if args.fake_ai:
+            use_fake_ai = True
+    try:
+        run_demo(db_path, use_fake_ai=use_fake_ai, live=live, out=out)
+    except MissingCredentials as exc:
+        out(f"!! --live was requested but no Anthropic credential is available. {exc}")
+        return 2
     return 0
 
 
-def run_demo(db_path: str, use_fake_ai: bool | None = None, out: Callable[[str], None] = print) -> dict[str, int]:
-    """Run the whole story on a fresh SQLite file; returns the row counts per table."""
+def run_demo(db_path: str, use_fake_ai: bool | None = None, live: bool = False,
+             out: Callable[[str], None] = print) -> dict[str, int]:
+    """Run the whole story on a fresh SQLite file; returns the row counts per table.
+
+    Fakes unless ``live=True``; ``use_fake_ai=True`` forces the fakes even then (``use_fake_ai=False``
+    is *not* an opt-in to the live model). ``live=True`` without a credential raises
+    :class:`nvplan.ai.agents.MissingCredentials` before any work is done."""
     t_start = time.perf_counter()
-    have_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    fake = True if use_fake_ai is True else (not have_key)
+    fake = True if use_fake_ai is True else (not live)
+    if not fake and not credentials_available():
+        raise MissingCredentials(credential_hint())
 
     out(RULE)
     out("NewVision AI-supported planning PoC - end-to-end demo")
-    out(f"DB: {db_path}   AI: {'SCRIPTED FAKE MODELS (nvplan.ai.fake) - no network' if fake else config.AI_MODEL + ' via ANTHROPIC_API_KEY'}")
+    ai_line = ("SCRIPTED FAKE MODELS (nvplan.ai.fake) - no network, no cost (the default; --live for the real model)"
+               if fake else
+               f"LIVE MODEL {config.AI_MODEL} (--live) - REAL TOKENS ARE BEING SPENT on this run, which takes minutes")
+    out(f"DB: {db_path}   AI: {ai_line}")
     out(RULE)
 
     # ---- 1. fresh db, seed, ingest -------------------------------------------------
@@ -215,10 +240,10 @@ def run_demo(db_path: str, use_fake_ai: bool | None = None, out: Callable[[str],
     _section(out, 5, "AI touchpoints 1 + 2: environmental scan, then a revenue proposal for "
              f"{PROPOSAL_YEAR} (advisory, status=proposed)")
     if fake:
-        out("!! AI: SCRIPTED FAKE MODELS from nvplan.ai.fake (no ANTHROPIC_API_KEY / --fake-ai). The tool calls, the "
-            "validation, the stored prompt and the gate are real; the model's words are scripted.")
+        out("!! AI: SCRIPTED FAKE MODELS from nvplan.ai.fake (the default; pass --live for the real model). The tool "
+            "calls, the validation, the stored prompt and the gate are real; the model's words are scripted.")
     else:
-        out(f"AI: real model {config.AI_MODEL} (deepagents + langchain-anthropic)")
+        out(f"AI: real model {config.AI_MODEL} (deepagents + langchain-anthropic) - REAL TOKENS ARE BEING SPENT")
 
     scan = run_env_scan(factory, model=scripted_env_scan_model() if fake else None)
     with factory() as s:

@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
+from nvplan.ai.audit import total_usage
 from nvplan.ai.fake import scripted_deviation_model, scripted_env_scan_model, scripted_revenue_model
 from nvplan.api.app import create_app
 from nvplan.db.session import get_engine, init_db, seed_categories
@@ -153,6 +154,17 @@ def test_07_env_scan_and_revenue_proposal(client, state):
     g = client.get("/plan/grid").json()
     assert g["scenario_id"] == state["run1"]["scenario_ids"]["base"]
     assert g["rows"][0]["cells"]["2027"]["path"] == "valorized"
+
+
+def test_07b_total_usage_on_detail_only(client, state):
+    """The detail route carries the run's real token usage (empty with the fake model, which
+    reports none); the list route stays light."""
+    rec = state["proposal"]
+    detail = client.get(f"/ai/records/{rec['id']}").json()
+    assert "total_usage" in detail and detail["total_usage"] == {}  # fake model: no usage metadata
+    assert detail["total_usage"] == total_usage(detail["call_log"])
+    listed = client.get("/ai/records").json()
+    assert listed and all("total_usage" not in x and "call_log" not in x for x in listed)
 
 
 def test_08_confirm_reruns(client, state):
