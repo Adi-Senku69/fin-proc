@@ -1,6 +1,6 @@
-"""Tests for brainkit.validate / brainkit.ingest (PLATFORM.md §9, §10 P1 done-when:
-"a hand-written decision file ingests; a bad one is rejected with a precise message;
-re-ingest is idempotent").
+"""Tests for brainkit.validate / brainkit.indexer (PLATFORM.md §9, §10 P1 done-when:
+"a hand-written decision file indexes cleanly; a bad one is rejected with a precise
+message; reindexing is idempotent").
 
 ``provenance`` is a fixed dependency built by a parallel agent against the same
 PLATFORM.md contract; these tests import it for real and skip with a clear reason if
@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from provenance import Claim, ClaimLink, Evidence, TagKind, get_engine, init_db
 
-from brainkit.ingest import ingest_tree, rebuild
+from brainkit.indexer import reindex_tree, rebuild_index
 from brainkit.validate import validate_file, validate_tree
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -76,9 +76,9 @@ class TestOrphanEvidenceRejection:
         findings = validate_file(brain_root / "decisions" / "2026-01-01-bad-example.md", brain_root=brain_root)
         assert any(f.code == "orphan_evidence" and f.severity == "error" for f in findings)
 
-        report = ingest_tree(prov_session, brain_root, strict=True)
+        report = reindex_tree(prov_session, brain_root, strict=True)
         assert report.files_seen == 1
-        assert report.ingested == 0
+        assert report.indexed == 0
         assert len(report.rejected) == 1
         assert any(f.code == "orphan_evidence" for f in report.findings)
         assert prov_session.execute(select(Claim)).scalars().all() == []
@@ -96,29 +96,29 @@ class TestOrphanEvidenceRejection:
         assert "if things change" in text.lower()
 
 
-class TestIngestOnRealTree:
-    def test_clean_tree_ingests(self, prov_session):
-        report = ingest_tree(prov_session, BRAIN_ROOT, strict=True)
+class TestReindexOnRealTree:
+    def test_clean_tree_indexes(self, prov_session):
+        report = reindex_tree(prov_session, BRAIN_ROOT, strict=True)
         assert report.rejected == ()
-        assert report.ingested > 0
-        assert report.ingested == report.files_seen  # nothing was already in this fresh DB
+        assert report.indexed > 0
+        assert report.indexed == report.files_seen  # nothing was already in this fresh DB
 
-    def test_ingest_is_idempotent(self, prov_session):
-        first = ingest_tree(prov_session, BRAIN_ROOT, strict=True)
+    def test_reindex_is_idempotent(self, prov_session):
+        first = reindex_tree(prov_session, BRAIN_ROOT, strict=True)
         claims_after_first = {c.id: c.body_sha256 for c in prov_session.execute(select(Claim)).scalars().all()}
         evidence_count_first = len(prov_session.execute(select(Evidence)).scalars().all())
 
-        second = ingest_tree(prov_session, BRAIN_ROOT, strict=True)
+        second = reindex_tree(prov_session, BRAIN_ROOT, strict=True)
         claims_after_second = {c.id: c.body_sha256 for c in prov_session.execute(select(Claim)).scalars().all()}
         evidence_count_second = len(prov_session.execute(select(Evidence)).scalars().all())
 
-        assert second.ingested == 0
+        assert second.indexed == 0
         assert second.skipped_unchanged == first.files_seen
         assert claims_after_first == claims_after_second  # same ids, same content
         assert evidence_count_first == evidence_count_second
 
     def test_rebuild_after_editing_a_file_updates_the_row(self, tmp_brain: Path, prov_session):
-        rebuild(prov_session, tmp_brain)
+        rebuild_index(prov_session, tmp_brain)
         target = tmp_brain / "decisions" / "2026-09-19-adopt-decision-provenance.md"
         path_str = str(target.relative_to(tmp_brain).as_posix())
 
@@ -132,7 +132,7 @@ class TestIngestOnRealTree:
         )
         target.write_text(text)
 
-        rebuild(prov_session, tmp_brain)
+        rebuild_index(prov_session, tmp_brain)
         after = prov_session.execute(select(Claim).where(Claim.path == path_str)).scalar_one()
         assert after.body_sha256 != old_sha
         assert after.title is not None and after.title.endswith("(revised)")
@@ -144,7 +144,7 @@ class TestStoredEvidenceTextIsStripped:
     (the claim with its tag stripped and whitespace collapsed) instead."""
 
     def test_stored_text_never_ends_with_its_own_tag_raw(self, prov_session):
-        ingest_tree(prov_session, BRAIN_ROOT, strict=True)
+        reindex_tree(prov_session, BRAIN_ROOT, strict=True)
         rows = prov_session.execute(select(Evidence)).scalars().all()
         assert rows, "expected at least one evidence row from the real tree"
         for row in rows:
@@ -155,7 +155,7 @@ class TestStoredEvidenceTextIsStripped:
             assert row.text.strip() != ""
 
     def test_tag_raw_is_unchanged_and_exact(self, prov_session):
-        ingest_tree(prov_session, BRAIN_ROOT, strict=True)
+        reindex_tree(prov_session, BRAIN_ROOT, strict=True)
         sunset = prov_session.execute(
             select(Claim).where(Claim.slug == "2026-09-20-sunset-legacy-import")
         ).scalar_one()
@@ -166,21 +166,21 @@ class TestStoredEvidenceTextIsStripped:
         assert "support lead" in verbal.text.lower()
         assert verbal.tag_raw not in verbal.text
 
-    def test_reingesting_an_already_ingested_tree_keeps_stripped_text(self, prov_session):
-        ingest_tree(prov_session, BRAIN_ROOT, strict=True)
-        second = ingest_tree(prov_session, BRAIN_ROOT, strict=True)
-        assert second.ingested == 0  # unchanged files are skipped, not rewritten
+    def test_reindexing_an_already_indexed_tree_keeps_stripped_text(self, prov_session):
+        reindex_tree(prov_session, BRAIN_ROOT, strict=True)
+        second = reindex_tree(prov_session, BRAIN_ROOT, strict=True)
+        assert second.indexed == 0  # unchanged files are skipped, not rewritten
         rows = prov_session.execute(select(Evidence)).scalars().all()
         for row in rows:
             assert not row.text.endswith(row.tag_raw)
 
-    def test_rebuild_corrects_stale_raw_text_left_by_an_older_ingest(self, tmp_brain: Path, prov_session):
+    def test_rebuild_index_corrects_stale_raw_text_left_by_an_older_reindex(self, tmp_brain: Path, prov_session):
         """Simulate a database populated by the pre-fix `_write_claim_body` (which
         stored the raw row, tag and all): the file on disk is unchanged (same
-        body_sha256), so a plain re-ingest's skip-unchanged fast path would never
-        revisit it - only `rebuild()` (wipe + fresh ingest) can correct it, per the
-        docstring on that fast path in `ingest_tree`."""
-        rebuild(prov_session, tmp_brain)
+        body_sha256), so a plain reindex's skip-unchanged fast path would never
+        revisit it - only `rebuild_index()` (wipe + fresh reindex) can correct it, per
+        the docstring on that fast path in `reindex_tree`."""
+        rebuild_index(prov_session, tmp_brain)
         sunset = prov_session.execute(
             select(Claim).where(Claim.slug == "2026-09-20-sunset-legacy-import")
         ).scalar_one()
@@ -194,21 +194,22 @@ class TestStoredEvidenceTextIsStripped:
         prov_session.commit()
         assert row.text.endswith(row.tag_raw)  # sanity: the corruption took
 
-        # A plain re-ingest is not expected to fix this (unchanged hash -> skipped).
-        reingest_report = ingest_tree(prov_session, tmp_brain, strict=True)
-        assert reingest_report.skipped_unchanged == reingest_report.files_seen
+        # A plain reindex is not expected to fix this (unchanged hash -> skipped).
+        reindex_report = reindex_tree(prov_session, tmp_brain, strict=True)
+        assert reindex_report.skipped_unchanged == reindex_report.files_seen
         stale = prov_session.execute(select(Evidence).where(Evidence.id == row.id)).scalar_one()
         assert stale.text.endswith(stale.tag_raw)  # still stale - documents the limit
 
-        # rebuild() wipes and re-ingests fresh, which does fix it. Clear the identity
-        # map first: rebuild's raw `delete(...)` statements bypass the ORM, so the
-        # `row`/`stale` objects above are now stale Python references to rows that no
-        # longer exist - without expiring them, SQLite's rowid reuse after DELETE can
-        # collide with those cached identities once ingest_tree re-adds a Claim/Evidence
-        # under the same id and warns about it (a session-hygiene artifact of this test
-        # re-using one session across two rebuilds, not a defect in ingest.py itself).
+        # rebuild_index() wipes and reindexes fresh, which does fix it. Clear the
+        # identity map first: rebuild_index's raw `delete(...)` statements bypass the
+        # ORM, so the `row`/`stale` objects above are now stale Python references to
+        # rows that no longer exist - without expiring them, SQLite's rowid reuse
+        # after DELETE can collide with those cached identities once reindex_tree
+        # re-adds a Claim/Evidence under the same id and warns about it (a
+        # session-hygiene artifact of this test re-using one session across two
+        # rebuilds, not a defect in indexer.py itself).
         prov_session.expunge_all()
-        rebuild(prov_session, tmp_brain)
+        rebuild_index(prov_session, tmp_brain)
         fixed = prov_session.execute(
             select(Evidence).where(
                 Evidence.claim_id.in_(
@@ -222,7 +223,7 @@ class TestStoredEvidenceTextIsStripped:
 
 class TestComputedTagResolution:
     def test_unresolved_without_a_lookup(self, prov_session):
-        ingest_tree(prov_session, BRAIN_ROOT, strict=True)
+        reindex_tree(prov_session, BRAIN_ROOT, strict=True)
         computed_evidence = prov_session.execute(select(Evidence).where(Evidence.tag_kind == TagKind.computed)).scalars().all()
         assert len(computed_evidence) == 1
         row = computed_evidence[0]
@@ -234,7 +235,7 @@ class TestComputedTagResolution:
         engine = get_engine("sqlite:///:memory:")
         init_db(engine)
         with Session(engine) as session:
-            ingest_tree(session, BRAIN_ROOT, strict=True, derivation_lookup=lambda key: 42 if key == "param:PERS" else None)
+            reindex_tree(session, BRAIN_ROOT, strict=True, derivation_lookup=lambda key: 42 if key == "param:PERS" else None)
             computed_evidence = session.execute(select(Evidence).where(Evidence.tag_kind == TagKind.computed)).scalars().all()
             assert len(computed_evidence) == 1
             row = computed_evidence[0]
@@ -242,7 +243,7 @@ class TestComputedTagResolution:
             assert row.target_derivation_id == 42
 
     def test_quantifies_link_created_to_a_synthetic_computed_claim(self, prov_session):
-        ingest_tree(prov_session, BRAIN_ROOT, strict=True)
+        reindex_tree(prov_session, BRAIN_ROOT, strict=True)
         links = prov_session.execute(select(ClaimLink)).scalars().all()
         quantifies_links = [l for l in links if l.relation.value == "quantifies"]
         assert len(quantifies_links) == 1
@@ -275,7 +276,7 @@ class TestMisplacedRecordRejection:
             "- **Status:** open\n"
         )
 
-        report = ingest_tree(prov_session, tmp_brain, strict=True)
+        report = reindex_tree(prov_session, tmp_brain, strict=True)
 
         assert path in report.rejected
         assert any(f.code == "misplaced_record" for f in report.findings)

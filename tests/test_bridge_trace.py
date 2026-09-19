@@ -28,7 +28,7 @@ from nvplan.ingest.actuals import ingest_actuals, load_actuals_csv
 from nvplan.services.planning import Override, run_plan
 from nvplan.services.trace import find_plan_value, render_trace, trace_plan_value
 
-from brainkit.ingest import ingest_tree
+from brainkit.indexer import reindex_tree
 
 from provenance import Claim, ClaimKind, Evidence, EvidenceSection, TagKind
 from provenance.models import Base as ProvenanceBase
@@ -201,12 +201,12 @@ def test_claim_block_omits_reversal_line_when_none(joint_session):
 
 
 def test_reversal_condition_round_trips_from_markdown_to_render_trace(joint_session):
-    """Full pipeline, real worked example (PLATFORM.md §4.4): brainkit.ingest indexes
+    """Full pipeline, real worked example (PLATFORM.md §4.4): brainkit.indexer indexes
     brain/decisions/2026-09-20-sunset-legacy-import.md's '## What would reverse this'
     prose onto its Claim, and nvplan.services.trace prints it in the trace of a
     downstream plan value the decision's revenue override touches."""
     session = joint_session
-    report = ingest_tree(session, REAL_BRAIN_ROOT, strict=True)
+    report = reindex_tree(session, REAL_BRAIN_ROOT, strict=True)
     assert report.rejected == ()
     claim = session.execute(select(Claim).where(Claim.slug == REAL_REVERSAL_SLUG)).scalar_one()
     assert claim.reversal_condition is not None

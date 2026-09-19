@@ -1,6 +1,6 @@
 """Tests for brainkit.parse (PLATFORM.md §5, P1 done-when: "a hand-written decision
-file ingests"). Exercises the two worked decision examples and the worked hypothesis
-example under brain/.
+file indexes cleanly"). Exercises the two worked decision examples and the worked
+hypothesis example under brain/.
 
 ``provenance`` is a fixed dependency built by a parallel agent against the same
 PLATFORM.md contract; these tests import it for real and skip with a clear reason if

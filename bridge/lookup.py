@@ -29,7 +29,7 @@ def make_derivation_lookup(session: Session) -> Callable[[str], "int | None"]:
     returned callable, keyed by the ledger key, so repeated lookups for the same key (one
     per evidence row that cites it) hit the database once. Never raises: an unknown key, or
     any lookup failure, resolves to ``None`` so a bad citation is reported by the caller
-    (``brainkit.ingest``'s ``Evidence.resolved``) rather than crashing ingest.
+    (``brainkit.indexer``'s ``Evidence.resolved``) rather than crashing the reindex.
     """
     cache: dict[str, int | None] = {}
 

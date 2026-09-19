@@ -240,11 +240,19 @@ class FindingOut(BaseModel):
     severity: str
 
 
-class BrainIngestOut(BaseModel):
+class BrainReindexOut(BaseModel):
+    """Result of rebuilding the claim index from ``brain/``: every candidate markdown
+    file is re-read and its row recomputed. Nothing is imported from outside the
+    repository - the files are already the record, and this only refreshes the
+    database's copy of them (PLATFORM.md §3). ``indexed`` counts files whose row was
+    (re)written this run; ``skipped_unchanged`` counts files whose stored hash already
+    matched and were left alone; ``rejected`` counts files a strict reindex refused to
+    turn into a row at all."""
+
     files_seen: int
-    ingested: int
-    skipped_unchanged: int
-    rejected: list[str] = Field(default_factory=list, description="paths rejected under strict ingest")
+    indexed: int = Field(description="files whose row was (re)written this run")
+    skipped_unchanged: int = Field(description="files already current in the index; not rewritten")
+    rejected: list[str] = Field(default_factory=list, description="paths rejected under strict reindexing")
     findings: list[FindingOut] = Field(default_factory=list)
 
 

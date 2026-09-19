@@ -6,8 +6,8 @@ no API key: this is a deterministic proof, not a demo of the AI layer.
 
     1. init both metadatas, seed categories, ingest the illustrative actuals, run a
        baseline plan.
-    2. ingest brain/, resolving (computed, <key>) tags via bridge.lookup, and report how
-       many resolved to a real derivation row (money informs decisions).
+    2. reindex brain/, resolving (computed, <key>) tags via bridge.lookup, and report
+       how many resolved to a real derivation row (money informs decisions).
     3. read decided_effects, build the revenue override, rerun the plan.
     4. print before/after revenue and personnel for the affected year, and assert the
        personnel delta equals beta times the revenue delta (decision drives money).
@@ -38,7 +38,7 @@ from provenance.models import Evidence, TagKind
 from bridge.db import init_platform_db
 from bridge.effects import WIRED_CATEGORY, decided_effects, revenue_override
 from bridge.lookup import make_derivation_lookup
-from brainkit.ingest import ingest_tree
+from brainkit.indexer import reindex_tree
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BRAIN_ROOT = REPO_ROOT / "brain"
@@ -66,17 +66,17 @@ def main(argv: list[str] | None = None) -> int:
                 f"{baseline.n_statement_lines} statement lines, {baseline.n_derivations} derivations"
             )
 
-            _step("2. ingest brain/, resolving (computed, <key>) tags to real derivations")
+            _step("2. reindex brain/, resolving (computed, <key>) tags to real derivations")
             lookup = make_derivation_lookup(session)
-            report = ingest_tree(session, BRAIN_ROOT, strict=True, derivation_lookup=lookup)
+            report = reindex_tree(session, BRAIN_ROOT, strict=True, derivation_lookup=lookup)
             print(
-                f"files_seen={report.files_seen} ingested={report.ingested} "
+                f"files_seen={report.files_seen} indexed={report.indexed} "
                 f"skipped_unchanged={report.skipped_unchanged} rejected={len(report.rejected)}"
             )
             if report.rejected:
                 for path in report.rejected:
                     print(f"  REJECTED: {path}")
-                print("brain/ did not validate cleanly under strict ingest - aborting")
+                print("brain/ did not validate cleanly under strict reindex - aborting")
                 return 1
 
             computed = session.execute(select(Evidence).where(Evidence.tag_kind == TagKind.computed)).scalars().all()

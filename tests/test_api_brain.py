@@ -32,7 +32,7 @@ def state() -> dict:
     return {}
 
 
-# --------------------------------------------------------------------------- validate / ingest
+# --------------------------------------------------------------------------- validate / reindex
 
 
 def test_01_validate_clean_on_real_tree(client):
@@ -48,20 +48,20 @@ def test_01_validate_clean_on_real_tree(client):
         assert not f["path"].startswith("/")  # relative to the repo root, never absolute
 
 
-def test_02_ingest_reports_real_file_count_and_is_idempotent(client, state):
-    r = client.post("/brain/ingest")
+def test_02_reindex_reports_real_file_count_and_is_idempotent(client, state):
+    r = client.post("/brain/reindex")
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["files_seen"] > 0
-    assert body["ingested"] == body["files_seen"]
+    assert body["indexed"] == body["files_seen"]
     assert body["skipped_unchanged"] == 0
     assert body["rejected"] == []
     state["files_seen"] = body["files_seen"]
 
-    r2 = client.post("/brain/ingest")
+    r2 = client.post("/brain/reindex")
     body2 = r2.json()
     assert body2["files_seen"] == state["files_seen"]
-    assert body2["ingested"] == 0
+    assert body2["indexed"] == 0
     assert body2["skipped_unchanged"] == state["files_seen"]
 
 

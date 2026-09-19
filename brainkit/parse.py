@@ -1,5 +1,5 @@
 """Parse decision, hypothesis and other brain files into a structural shape that
-``brainkit.validate`` and ``brainkit.ingest`` can reason about.
+``brainkit.validate`` and ``brainkit.indexer`` can reason about.
 
 PLATFORM.md §5 layout: `## `-heading splitting, a leading `# ` title, and evidence
 rows pulled from a fixed set of headings/labels — never from anywhere else.

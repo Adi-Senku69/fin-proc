@@ -50,7 +50,7 @@ ones that later feed a plan override (PLATFORM.md §7).
   specifically to avoid needing them for a corpus this size  (industry-knowledge)
 
 ## What would reverse this
-If, 90 days after `brainkit.ingest` is in daily use, fewer than half of newly shipped
+If, 90 days after `brainkit.indexer` is in daily use, fewer than half of newly shipped
 decisions carry a complete evidence trail, or the write-time hook's false-positive
 rate on legitimate writes exceeds 20% (measured by how often a human overrides it),
 we would reconsider the schema's strictness or the enforcement mechanism.

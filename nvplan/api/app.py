@@ -55,7 +55,7 @@ from nvplan.services.trace import render_trace, trace_plan_value, trace_statemen
 # platform's demo/composition layer - the one place meant to import both ``brainkit`` and
 # ``bridge`` (see ``nvplan/api/queries.py``'s import comment for the layering note this
 # supersedes here, by the same UI.md instruction).
-from brainkit.ingest import ingest_tree
+from brainkit.indexer import reindex_tree
 from brainkit.validate import Finding, validate_tree
 from bridge.db import init_platform_db
 from bridge.effects import decided_effects, revenue_override
@@ -368,17 +368,17 @@ def _register(app: FastAPI) -> None:
 
     # ---- brain / bridge (PLATFORM.md §7, §7.1; UI.md Part 1) --------------------
 
-    @app.post("/brain/ingest", response_model=S.BrainIngestOut)
-    def brain_ingest(
+    @app.post("/brain/reindex", response_model=S.BrainReindexOut)
+    def brain_reindex(
         brain_root: str | None = Query(None, description="default: the repository's brain/ directory"),
         session: Session = Depends(get_session),
     ):
         root = Path(brain_root) if brain_root else DEFAULT_BRAIN_ROOT
         lookup = make_derivation_lookup(session)
-        report = ingest_tree(session, root, strict=True, derivation_lookup=lookup)
+        report = reindex_tree(session, root, strict=True, derivation_lookup=lookup)
         return {
             "files_seen": report.files_seen,
-            "ingested": report.ingested,
+            "indexed": report.indexed,
             "skipped_unchanged": report.skipped_unchanged,
             "rejected": [_repo_relative(p) for p in report.rejected],
             "findings": [_finding_dict(f) for f in report.findings],

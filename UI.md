@@ -19,8 +19,8 @@ The brain and the bridge currently have none. All responses are JSON with pydant
 
 | Route | Returns |
 |---|---|
-| `POST /brain/ingest` | `{files_seen, ingested, skipped_unchanged, rejected: [path], findings: [Finding]}` |
-| `GET /brain/validate` | `{errors: [Finding], warnings: [Finding], clean: bool}` without ingesting |
+| `POST /brain/reindex` | `{files_seen, indexed, skipped_unchanged, rejected: [path], findings: [Finding]}` |
+| `GET /brain/validate` | `{errors: [Finding], warnings: [Finding], clean: bool}` without reindexing |
 | `GET /brain/claims?kind=&status=` | `[{id, kind, slug, title, status, date, path, has_effect}]` |
 | `GET /brain/claims/{id}` | one claim plus `evidence: [{section, text, tag_kind, tag_raw, target_path, resolved}]`, `reversal_condition`, `effect`, `links: [{relation, other_slug}]` |
 | `GET /brain/effects` | decided quantified effects: `[{claim_id, decision_slug, decision_title, category_code, year, value, unit, decided_on}]` |
@@ -58,7 +58,7 @@ the view so a state is linkable.
 6. **AI records** — each record's touchpoint, status, model, the literal prompt, and the per-call audit
    log with real token usage so cache effectiveness is visible.
 7. **Demo** — the loop as buttons, in order, each reporting what it did: ingest actuals, run the plan,
-   ingest the brain, apply decided effects, then a link straight to the figure the decision moved.
+   reindex the brain, apply decided effects, then a link straight to the figure the decision moved.
 
 ### Rules
 

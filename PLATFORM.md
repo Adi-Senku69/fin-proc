@@ -25,9 +25,9 @@ foreign key rather than by convention. The platform extends the same rule from a
 
 **Markdown files under `brain/` are authoritative.** They are git-native, diffable, reviewable, and
 readable without our software. The database is a **derived index**, rebuildable at any time by
-re-ingesting the tree. Two rules follow, and they are absolute:
+reindexing the tree. Two rules follow, and they are absolute:
 
-- Never edit the index as a way of changing a fact. Edit the file, re-ingest.
+- Never edit the index as a way of changing a fact. Edit the file, reindex.
 - Never treat the index as the record. If the two disagree, the file wins and the index is stale.
 
 ## 4. The provenance contract
@@ -48,8 +48,9 @@ Parenthetical, exact forms:
 
 Ours, and the reason the two halves of this platform are worth joining:
 
-- `(computed, <derivation-key>)` — a figure the finance engine produced. At ingest it **must** resolve
-  to a real `derivation` row, or the claim is rejected. This is how a product decision cites money.
+- `(computed, <derivation-key>)` — a figure the finance engine produced. At reindex time it **must**
+  resolve to a real `derivation` row, or the claim is rejected. This is how a product decision cites
+  money.
 
 ### 4.2 The hard rule
 
@@ -90,7 +91,7 @@ brain/                          <- source of truth, plain markdown
 └── _SCHEMA.md per collection
 
 provenance/    <- shared core: tag enum, parser, lifecycle, index models, validators
-brainkit/      <- markdown parse, structural validation, ingest into the index
+brainkit/      <- markdown parse, structural validation, reindex into the index
 nvplan/        <- finance module, behaviour unchanged
 ```
 
@@ -118,7 +119,7 @@ decision as their provenance, so opening any downstream figure reaches the decis
 evidence, and the person who confirmed it. The existing confirmation gate is reused unchanged.
 
 **Money informs decisions.** A decision cites a computed figure with `(computed, <derivation-key>)`.
-Ingest resolves that to the derivation row, so the decision's evidence is pinned to a specific
+Reindexing resolves that to the derivation row, so the decision's evidence is pinned to a specific
 calculation over specific inputs, not to a number someone retyped.
 
 ### 7.1 The bridge contract (P2)
@@ -206,7 +207,7 @@ claims that must wear provenance tags.
 
 1. **Write time.** A hook validates a brain file on every write: tag on every evidence row, links
    resolve, status in the enum, reversal condition present. Fast feedback, same mechanism pm-brain uses.
-2. **Ingest time.** The same validation runs again, and a claim that fails it cannot become a row. The
+2. **Reindex time.** The same validation runs again, and a claim that fails it cannot become a row. The
    schema is the backstop, so a hook that is disabled or bypassed cannot corrupt the index.
 
 ## 10. Phases
@@ -214,7 +215,7 @@ claims that must wear provenance tags.
 | Phase | Work | Done when |
 |---|---|---|
 | P0 | `provenance/`: tag parser, lifecycle enums, index models, structural validators | Tag enum round-trips; an orphan row is rejected; models create cleanly |
-| P1 | `brainkit/` + `brain/` scaffold and schemas; parse, validate, ingest, rebuild | A hand-written decision file ingests; a bad one is rejected with a precise message; re-ingest is idempotent |
+| P1 | `brainkit/` + `brain/` scaffold and schemas; parse, validate, reindex, rebuild | A hand-written decision file indexes cleanly; a bad one is rejected with a precise message; reindexing is idempotent |
 | P2 | The bridge, both directions | A decision cascades into a plan and the trace reaches it; a `computed` tag resolves to a derivation |
 | P3 | Strategy and positioning cluster, per §8 | Skills load through the existing mechanism; coded parts carry derivations |
 | P4 | Remaining capability clusters | Out of scope for now |

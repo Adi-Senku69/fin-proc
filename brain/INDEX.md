@@ -1,8 +1,10 @@
 # brain/ — the decision memory
 
-This tree is the **authoritative** record (PLATFORM.md §3). The `provenance`/`brainkit`
-index tables are a derived cache, rebuildable at any time by re-ingesting these files.
-Edit a fact here, then re-ingest — never patch the database directly.
+This tree is the **authoritative** record (PLATFORM.md §3): the database is a
+disposable, rebuildable index built from these files, never a second copy of the
+facts. The `provenance`/`brainkit` index tables can be thrown away and regenerated at
+any time by reindexing this tree. Edit a fact here, then reindex — never patch the
+database directly.
 
 ## What lives where
 
@@ -26,5 +28,5 @@ Edit a fact here, then re-ingest — never patch the database directly.
 
 Every bullet under an evidence heading carries exactly one provenance tag from the
 closed enum in PLATFORM.md §4.1, or the file is rejected — at write time by the hook
-in `.claude/hooks/validate_brain_file.py`, and again at ingest time by
-`brainkit.ingest`, so a disabled hook can never let an unsourced claim into the index.
+in `.claude/hooks/validate_brain_file.py`, and again at reindex time by
+`brainkit.indexer`, so a disabled hook can never let an unsourced claim into the index.

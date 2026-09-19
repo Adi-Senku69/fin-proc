@@ -1,4 +1,4 @@
-"""Ingest the ``brain/`` markdown tree into the derived index (PLATFORM.md §3, §6).
+"""Reindex the ``brain/`` markdown tree into the derived index (PLATFORM.md §3, §6).
 
 The tree is authoritative; this module only ever produces a rebuildable cache of it.
 Validation runs first (``brainkit.validate``) and, under ``strict=True``, a file
@@ -35,23 +35,23 @@ from brainkit.parse import ParsedFile, parse_brain_file
 from brainkit.validate import Finding, _effect_problems, _is_placeholder_row, validate_file
 
 # Collections that actually become Claim rows. `source/` is raw material and is never
-# rewritten or ingested; `_examples/` is fixture space; `_SCHEMA.md` is a template.
-INGESTIBLE_COLLECTIONS = ("decisions", "hypotheses", "ingestion", "knowledge")
+# rewritten or indexed; `_examples/` is fixture space; `_SCHEMA.md` is a template.
+INDEXABLE_COLLECTIONS = ("decisions", "hypotheses", "ingestion", "knowledge")
 
 DerivationLookup = Callable[[str], "int | None"]
 
 
 @dataclass(frozen=True)
-class IngestReport:
+class IndexReport:
     files_seen: int
-    ingested: int
+    indexed: int
     skipped_unchanged: int
     rejected: tuple[Path, ...]
     findings: tuple[Finding, ...] = field(default_factory=tuple)
 
 
 def _iter_candidate_files(brain_root: Path):
-    for collection in INGESTIBLE_COLLECTIONS:
+    for collection in INDEXABLE_COLLECTIONS:
         root = brain_root / collection
         if not root.is_dir():
             continue
@@ -204,17 +204,17 @@ def _extract_all_links(text: str) -> list[str]:
     return out
 
 
-def ingest_tree(
+def reindex_tree(
     session: Session,
     brain_root: str | Path,
     *,
     strict: bool = True,
     derivation_lookup: DerivationLookup | None = None,
-) -> IngestReport:
+) -> IndexReport:
     brain_root = Path(brain_root)
 
     files_seen = 0
-    ingested_count = 0
+    indexed_count = 0
     skipped_unchanged = 0
     rejected: list[Path] = []
     all_findings: list[Finding] = []
@@ -237,16 +237,16 @@ def ingest_tree(
             # Idempotence fast path: an unchanged body hash means _write_claim_body
             # would recompute byte-identical Evidence/ClaimLink rows, so we skip the
             # rewrite entirely rather than re-parsing every unchanged file on every
-            # ingest. The one thing this fast path cannot do is *retroactively* fix
+            # reindex. The one thing this fast path cannot do is *retroactively* fix
             # rows that were written under an older, buggy version of
             # _write_claim_body (e.g. one that stored the raw row instead of
             # RowParse.text) — the hash hasn't changed, so this file is never
-            # revisited. `rebuild()` is the correction path for that: it wipes
-            # Claim/Evidence/ClaimLink first, so every file is re-ingested as if
+            # revisited. `rebuild_index()` is the correction path for that: it wipes
+            # Claim/Evidence/ClaimLink first, so every file is re-indexed as if
             # brand-new (no `existing` row survives to be hash-matched), which
             # rewrites every Evidence row with the current logic. Any stale evidence
-            # text left over from before this fix requires a `rebuild`, not a plain
-            # re-ingest.
+            # text left over from before this fix requires a `rebuild_index`, not a
+            # plain reindex.
             skipped_unchanged += 1
             continue
 
@@ -286,23 +286,23 @@ def ingest_tree(
             session.flush()
 
         _write_claim_body(session, claim, parsed, brain_root=brain_root, derivation_lookup=derivation_lookup)
-        ingested_count += 1
+        indexed_count += 1
 
     session.commit()
-    return IngestReport(
+    return IndexReport(
         files_seen=files_seen,
-        ingested=ingested_count,
+        indexed=indexed_count,
         skipped_unchanged=skipped_unchanged,
         rejected=tuple(rejected),
         findings=tuple(all_findings),
     )
 
 
-def rebuild(session: Session, brain_root: str | Path) -> IngestReport:
-    """Wipe the index tables, then ingest the tree fresh. The tree is the source of
+def rebuild_index(session: Session, brain_root: str | Path) -> IndexReport:
+    """Wipe the index tables, then reindex the tree fresh. The tree is the source of
     truth (PLATFORM.md §3); the index is always safe to throw away and recompute."""
     session.execute(delete(ClaimLink))
     session.execute(delete(Evidence))
     session.execute(delete(Claim))
     session.commit()
-    return ingest_tree(session, brain_root, strict=True)
+    return reindex_tree(session, brain_root, strict=True)

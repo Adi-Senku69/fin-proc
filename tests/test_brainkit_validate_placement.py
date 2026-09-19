@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from provenance import Claim, get_engine, init_db
 
-from brainkit.ingest import ingest_tree
+from brainkit.indexer import reindex_tree
 from brainkit.validate import validate_file, validate_tree
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -236,12 +236,12 @@ class TestRealTreeStillValidatesClean:
         assert errors == [], f"unexpected error-level findings: {[(f.path, f.code, f.message) for f in errors]}"
 
 
-class TestIngestRejectsMisplacedRecord:
+class TestReindexRejectsMisplacedRecord:
     def test_misplaced_record_rejected_under_strict_zero_claim_rows(self, tmp_brain: Path, prov_session):
         path = tmp_brain / "decisions" / "2026-01-01-misfiled-hypothesis.md"
         path.write_text(HYPOTHESIS_BODY)
 
-        report = ingest_tree(prov_session, tmp_brain, strict=True)
+        report = reindex_tree(prov_session, tmp_brain, strict=True)
 
         assert path in report.rejected
         assert any(f.code == "misplaced_record" for f in report.findings)

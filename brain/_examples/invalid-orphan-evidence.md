@@ -2,7 +2,7 @@
 INTENTIONAL TEST FIXTURE — this file is deliberately invalid. It exists so
 tests/test_brainkit_ingest.py and tests/test_brainkit_parse.py can exercise the
 orphan-evidence rejection path. It is not a real decision, it should never be cited
-from anywhere, and `brainkit.ingest` must never turn it into a Claim row. It lives
+from anywhere, and `brainkit.indexer` must never turn it into a Claim row. It lives
 under brain/_examples/, which brainkit.validate treats as fixture space (findings
 here are reported at warning severity at most, so validate_tree over the real brain
 root stays clean) — the strict-rejection behaviour itself is exercised in

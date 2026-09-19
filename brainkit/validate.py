@@ -1,6 +1,6 @@
 """Structural validation of brain files (PLATFORM.md §9 — "the schema is the
-backstop"). Runs at write time (via the hook) and again at ingest time; a file with
-an error-level finding under ``strict`` ingestion is never turned into a Claim row.
+backstop"). Runs at write time (via the hook) and again at reindex time; a file with
+an error-level finding under ``strict`` reindexing is never turned into a Claim row.
 """
 
 from __future__ import annotations

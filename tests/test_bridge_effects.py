@@ -1,6 +1,6 @@
 """Tests for bridge.effects and the PLATFORM.md §7.1 "## Quantified effect" block:
 parsing (brainkit.parse), validation (brainkit.validate's effect_on_undecided /
-bad_effect / effect_not_wired), strict-ingest rejection of a malformed effect, and the
+bad_effect / effect_not_wired), strict-reindex rejection of a malformed effect, and the
 bridge.effects API that turns decided effects into a revenue override.
 
 ``nvplan.services.planning.Override`` is a fixed dependency added by a parallel change
@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from provenance.models import Claim, ClaimKind, get_engine, init_db
 
-from brainkit.ingest import ingest_tree
+from brainkit.indexer import reindex_tree
 from brainkit.parse import parse_decision_file
 from brainkit.validate import validate_file
 
@@ -185,16 +185,16 @@ class TestEffectValidation:
         assert not any(f.code == "bad_effect" for f in findings)
 
 
-# --------------------------------------------------------------------------- ingest rejection
+# --------------------------------------------------------------------------- reindex rejection
 
 
-class TestMalformedEffectRejectedAtIngest:
+class TestMalformedEffectRejectedAtReindex:
     def test_malformed_effect_rejected_under_strict_zero_claim_rows(self, tmp_path, prov_session):
         brain_root = tmp_path / "brain"
         _write_decision(brain_root, "2026-01-01-bad-effect.md", status="decided",
                         effect_lines="- category: NOPE\n- year: 2027\n- value: 100.0\n- unit: kEUR")
-        report = ingest_tree(prov_session, brain_root, strict=True)
-        assert report.ingested == 0
+        report = reindex_tree(prov_session, brain_root, strict=True)
+        assert report.indexed == 0
         assert len(report.rejected) == 1
         assert any(f.code == "bad_effect" for f in report.findings)
         assert prov_session.execute(select(Claim)).scalars().all() == []
@@ -202,8 +202,8 @@ class TestMalformedEffectRejectedAtIngest:
     def test_valid_effect_is_indexed_on_a_decided_decision(self, tmp_path, prov_session):
         brain_root = tmp_path / "brain"
         _write_decision(brain_root, "2026-01-01-good-effect.md", status="decided", effect_lines=VALID_REV_EFFECT)
-        report = ingest_tree(prov_session, brain_root, strict=True)
-        assert report.ingested == 1
+        report = reindex_tree(prov_session, brain_root, strict=True)
+        assert report.indexed == 1
         claim = prov_session.execute(select(Claim)).scalar_one()
         assert claim.effect_json == {"category": "REV", "year": 2027, "value": 100.5, "unit": "kEUR"}
 
@@ -220,7 +220,7 @@ class TestReversalConditionIndexing:
         """End-to-end round trip on the real worked example (PLATFORM.md §4.4): the
         ``## What would reverse this`` prose in brain/decisions/2026-09-20-sunset-legacy-
         import.md must land on the indexed Claim, whitespace-normalised."""
-        report = ingest_tree(prov_session, REAL_BRAIN_ROOT, strict=True)
+        report = reindex_tree(prov_session, REAL_BRAIN_ROOT, strict=True)
         assert report.rejected == ()
         claim = prov_session.execute(select(Claim).where(Claim.slug == REAL_REVERSAL_SLUG)).scalar_one()
         assert claim.reversal_condition is not None
@@ -234,12 +234,12 @@ class TestReversalConditionIndexing:
             effect_lines=VALID_REV_EFFECT, reversal="",
         )
         # pending + a quantified effect block would fire effect_on_undecided (error) and
-        # block strict ingest; the effect block is irrelevant to this test, so drop it.
+        # block strict reindex; the effect block is irrelevant to this test, so drop it.
         text = path.read_text().rsplit("\n\n## Quantified effect", 1)[0] + "\n"
         path.write_text(text)
 
-        report = ingest_tree(prov_session, brain_root, strict=True)
-        assert report.ingested == 1
+        report = reindex_tree(prov_session, brain_root, strict=True)
+        assert report.indexed == 1
         claim = prov_session.execute(select(Claim)).scalar_one()
         assert claim.reversal_condition is None
 
