@@ -78,10 +78,10 @@ LOOSE_FIGURES_CASES: list[tuple[str, list[str]]] = [
     ("A negative −245.7 swing.", ["−245.7"]),  # unicode minus (U+2212), not ASCII hyphen
     ("500 categories would not be a count.", ["500"]),
     ("A year outside both windows, 2031, is not free.", ["2031"]),
-    # German formatting (dot as thousands, comma as decimal): "5" reads as an allowed small count
-    # ("5 EUR" - the pre-existing small-count gap in test_residual_small_count_ignores_the_
-    # following_word below), but "22.900" alone is still enough to reject the whole answer.
-    ("betrug 22.900,5 EUR", ["22.900"]),
+    # German formatting (dot as thousands, comma as decimal): the "5" after the comma used to
+    # read as an allowed small count (the pre-existing "5 EUR" gap, now closed - "EUR" is a unit
+    # word, so both pieces reject).
+    ("betrug 22.900,5 EUR", ["22.900", "5"]),
     ("param:PERS moved by 4.5% though.", ["4.5%"]),  # the identifier is masked; the figure beside it is not
     # -- must still pass (years in window/horizon, year ranges, small counts, identifiers,
     #    a full decision slug, "54-position", "Q1 2027", spelled-out counts) -------------------
@@ -111,6 +111,26 @@ LOOSE_FIGURES_CASES: list[tuple[str, list[str]]] = [
     ("500", ["500"]),  # a number alone, at the very start of the segment
     ("swing of 500", ["500"]),  # a number alone, at the very end of the segment
     ("22,,900 repeated separator", ["22", "900"]),  # a doubled separator still yields two offenders
+    # -- the two remaining holes this fix closes: the count exemption swallowing a spelled-out
+    #    unit ("15 percent" instead of "15%"), and a figure fused to a unit written BEFORE it
+    #    ("USD22900", the mirror of the trailing-fusion case above) --------------------------
+    ("costs are 5 EUR", ["5"]),
+    ("that is 12 percent", ["12"]),
+    ("margin of 15 percent", ["15"]),
+    ("margin of 15 percent.", ["15"]),  # punctuation right after the unit word doesn't shield it
+    ("a swing of 8 per cent this year", ["8"]),
+    ("tightened by 3 basis points", ["3"]),
+    ("widened by 4 bps", ["4"]),
+    ("grew 2 x versus last year", ["2"]),
+    ("costs are 5 kEUR", ["5"]),
+    ("revenue is USD22900 this year", ["USD22900"]),
+    ("revenue is kEUR22900 this year", ["kEUR22900"]),
+    ("code FY1234 is not a real year", ["FY1234"]),  # 4-digit fusion, but not a valid year - caught
+    # -- must still pass: genuine counts (a real word, not a unit) and short/valid fused labels --
+    ("about 15 accounts were affected", []),
+    ("5 categories changed", []),
+    ("FY2025 results were strong", []),  # 4-digit fusion, valid year in window - exempted
+    ("the value was q15 exactly", []),  # 2-digit fusion - exempted (see residual test below)
 ]
 
 
@@ -129,36 +149,39 @@ def test_loose_figures_contract(text, expected):
 # masking rule that accidentally widens the gap will be caught by this test failing.
 
 
-def test_residual_letter_prefixed_fusion_is_not_caught():
-    """The fix only closes "digits immediately followed by letters" (``22900kEUR``), the shape
-    named in the brief. The reverse - a unit written BEFORE the figure, fused with no space
-    ("USD22900", "kEUR22900") - is invisible to the scan: ``_NUMERIC_RE``'s leading boundary
-    still refuses to start a match right after a letter, exactly as it always has for the
-    trailing side before this fix. Widening that boundary risks a new false positive on
-    ordinary business shorthand ("FY2025") that was never in scope here."""
-    assert loose_figures("revenue is USD22900 this year") == []
-    assert loose_figures("revenue is kEUR22900 this year") == []
-    assert loose_figures("FY2025 results were strong") == []  # confirms the boundary was NOT widened
+def test_residual_letter_prefixed_fusion_is_now_caught_except_short_or_valid_year():
+    """Closed: a unit written BEFORE the figure, fused with no space ("USD22900", "kEUR22900"),
+    is now caught by ``_leading_fusions`` even though ``_NUMERIC_RE``'s own leading boundary still
+    refuses to start a match right after a letter (that boundary was deliberately NOT widened -
+    see its comment). What remains exempt, by design, is a digit run short enough to be a real
+    label (<= 2 digits, "Q1"/"D2" - see ``test_residual_short_letter_prefixed_label_is_not_
+    caught`` below) or a four-digit run that IS a valid year in window/horizon ("FY2025",
+    "FY2027") - a four-digit run that ISN'T a valid year ("FY1234") is not exempt and is caught."""
+    assert loose_figures("revenue is USD22900 this year") == ["USD22900"]
+    assert loose_figures("revenue is kEUR22900 this year") == ["kEUR22900"]
+    assert loose_figures("FY2025 results were strong") == []  # valid year in window - still exempt
+    assert loose_figures("code FY1234 is not a real year") == ["FY1234"]  # not a valid year - caught
 
 
 def test_residual_short_letter_prefixed_label_is_not_caught():
     """The label shape ("Q1", "D2.P4") caps its digit run at two digits specifically to block a
-    large fused figure ("q1500") from posing as a label - see test below. A SHORT number behind a
-    single-letter prefix ("q15") is still invisible, but only for the same reason as the test
-    above (a leading letter blocks the numeric scan outright, label shape or not) - it is not a
-    hole in the label shape itself."""
+    large fused figure ("q1500") from posing as a label - see test below. ``_leading_fusions``
+    uses that same two-digit cap as its own exemption, so a SHORT number behind a single-letter
+    prefix ("q15") is deliberately still let through - not a hole in the label shape, but the
+    same "real labels never need more than two digits" trade-off applied one level down."""
     assert loose_figures("the value was q15 exactly") == []
 
 
 def test_large_fused_pseudo_label_is_rejected_not_masked():
     """Confirms the label shape's two-digit cap does its job: a large number dressed up with a
-    single-letter prefix does NOT get masked as a label. (It still isn't flagged as an offender
-    either, per the residual above - the leading letter blocks the numeric scan from ever
-    reaching it - but the important thing pinned here is that it is not wrongly treated as a safe
-    named identifier the way "Q1" is.)"""
+    single-letter prefix does NOT get masked as a label - it is not wrongly treated as a safe
+    named identifier the way "Q1" is. Now that ``_leading_fusions`` catches a leading fusion
+    whose digit run is neither short (<= 2 digits) nor a valid year, it IS flagged as an
+    offender too (its 4-digit run, "1500", is not a year in window/horizon)."""
     from nvplan.ai.assistant import _is_identifier_shape
 
     assert _is_identifier_shape("q1500") is False
+    assert loose_figures("the value was q1500 exactly") == ["q1500"]
 
 
 def test_residual_colon_and_iso_date_year_slot_are_unbounded():
@@ -182,14 +205,17 @@ def test_residual_hyphen_compound_label_is_capped_not_eliminated():
     assert loose_figures("22900-widgets shipped") == ["22900"]  # above the cap: rejected, not masked
 
 
-def test_residual_small_count_ignores_the_following_word():
-    """Pre-existing, unchanged by this fix: ``_is_allowed_count`` only checks that the number is
-    small (<= 20) and a word follows - it does not know whether that word is a genuine ordinal
-    ("3 scenarios") or a unit ("5 EUR"). Tightening it risks breaking the "small counts followed
-    by a word" case the brief requires to keep passing, so it is left as a documented, narrow,
-    pre-existing gap (bounded to <= 20) rather than touched here."""
-    assert loose_figures("The cost was 5 EUR.") == []
-    assert loose_figures("The cost was 12 kEUR.") == []
+def test_residual_small_count_unit_word_is_a_named_list_not_a_grammar():
+    """Closed for the units named in the brief: ``_is_allowed_count`` now denies the exemption
+    when the following word is one of a finite, named list of units/measures ("percent", "EUR",
+    "k", ...; see ``_COUNT_UNIT_WORDS``/``_COUNT_UNIT_PHRASES``). "The cost was 5 EUR." and "The
+    cost was 12 kEUR." - the two examples the pre-fix gap was pinned on - are now both rejected
+    (moved into ``LOOSE_FIGURES_CASES`` as "costs are 5 EUR" / "costs are 5 kEUR"). What remains,
+    by construction, is a unit word OUTSIDE that list: this is a named-list gap, not a grammar of
+    "what counts as a unit", so a currency this list doesn't name still reads as a plain count."""
+    assert loose_figures("The cost was 5 EUR.") == ["5"]
+    assert loose_figures("The cost was 12 kEUR.") == ["12"]
+    assert loose_figures("The cost was 5 GBP.") == []  # GBP is not in the named unit list
 
 
 # --------------------------------------------------------------------------- Touchpoint.assistant is additive
