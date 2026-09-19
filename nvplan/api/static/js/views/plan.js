@@ -26,7 +26,9 @@ export async function render(container, params, ctx) {
   }
   container.append(tabs);
 
-  const layout = el("div", { class: "split-layout" });
+  // The trace pane only earns its half of the grid once a cell is actually selected
+  // (app.css: .split-layout defaults to one column; .has-selection is what splits it).
+  const layout = el("div", { class: `split-layout${traceId ? " has-selection" : ""}` });
   const gridPane = el("div", { class: "pane grid-pane" });
   const tracePane = el("div", { class: "pane trace-pane" });
   layout.append(gridPane, tracePane);

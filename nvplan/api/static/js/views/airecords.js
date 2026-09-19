@@ -12,7 +12,9 @@ export async function render(container, params, ctx) {
   const selected = params.get("record") || "";
   container.append(el("h2", {}, ["AI records"]));
 
-  const layout = el("div", { class: "split-layout" });
+  // Same rule as Plan's trace pane (app.css): the detail pane only earns its half of the
+  // grid once a record is actually selected.
+  const layout = el("div", { class: `split-layout${selected ? " has-selection" : ""}` });
   const listPane = el("div", { class: "pane list-pane" });
   const detailPane = el("div", { class: "pane detail-pane" });
   layout.append(listPane, detailPane);

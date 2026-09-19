@@ -65,6 +65,8 @@ SKILL_NAMES: tuple[str, ...] = (
     "strategy-positioning",
     "strategy-product-vision",
     "strategy-swot",
+    # the conversational assistant (UI.md Part 3)
+    "assistant-citation-method",
 )
 
 READ_ONLY_FS_TOOLS: list[str] = ["read_file", "ls", "grep"]

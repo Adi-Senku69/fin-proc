@@ -18,7 +18,9 @@ export async function render(container, params, ctx) {
   container.append(banner);
   await loadValidation(banner);
 
-  const layout = el("div", { class: "split-layout" });
+  // Same rule as Plan's trace pane (app.css): the detail pane only earns its half of the
+  // grid once a claim is actually selected.
+  const layout = el("div", { class: `split-layout${selectedClaim ? " has-selection" : ""}` });
   const listPane = el("div", { class: "pane list-pane" });
   const detailPane = el("div", { class: "pane detail-pane" });
   layout.append(listPane, detailPane);
@@ -96,7 +98,9 @@ async function loadList(pane, ctx, selectedClaim) {
     const link = el("a", { href: `#view=brain&claim=${c.id}` }, [c.title || c.slug]);
     tr.append(
       el("td", {}, [claimKindLabel(c.kind), " ", codeTag(c.kind)]),
-      el("td", {}, [link]),
+      // the decision/hypothesis title is prose, not a figure - it may be an arbitrary-
+      // length sentence, so this cell (unlike the rest of the row) opts back into wrapping.
+      el("td", { class: "cell-wrap" }, [link]),
       el("td", {}, [chip(c.status, `chip-status chip-${c.status}`)]),
       el("td", {}, [c.date || "-"]),
       el("td", {}, [c.has_effect ? "yes" : "-"])

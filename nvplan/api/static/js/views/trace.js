@@ -36,9 +36,13 @@ function kvTable(entries, { termed = false } = {}) {
     const head = term
       ? el("th", {}, [term.label, " ", codeTag(term.symbol || k)])
       : el("th", {}, [k]);
-    table.append(
-      el("tr", {}, [head, el("td", {}, [typeof v === "object" && v !== null ? JSON.stringify(v) : fmtParam(k, v)])])
-    );
+    // A parameter/input value is a figure (alpha, beta, a year, a count) far more often
+    // than not, and a figure must never break mid-token (app.css: .kv-table td). Only the
+    // genuinely non-numeric case - a string, a compound value JSON has to stringify - opts
+    // back into wrapping via .kv-value-prose.
+    const isFigure = typeof v === "number" && Number.isFinite(v);
+    const text = typeof v === "object" && v !== null ? JSON.stringify(v) : fmtParam(k, v);
+    table.append(el("tr", {}, [head, el("td", { class: isFigure ? "" : "kv-value-prose" }, [text])]));
   }
   return table;
 }

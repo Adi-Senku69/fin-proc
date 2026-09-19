@@ -349,7 +349,12 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
 
 /* ---- layout: split panes ------------------------------------------------ */
 
-.split-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+/* The second pane (trace / detail) only reserves space once something is selected - the
+ * view sets .has-selection when it has an id/claim/record to show there. With nothing
+ * selected the grid/list gets the page's full width instead of being squeezed to a third
+ * of it for an empty "click a cell to trace it here" panel. */
+.split-layout { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
+.split-layout.has-selection { grid-template-columns: 1fr 1fr; }
 /* Wide content (a data table, a kv-table, a long path) scrolls inside its own pane
  * rather than stretching the pane - and with it the page - past the viewport
  * (UI.md: no horizontal body scroll). min-width: 0 is what lets a grid/flex item
@@ -370,10 +375,19 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
   border-bottom: 1px solid var(--border);
   padding: 5px 8px;
   text-align: right;
-  /* a cell can hold an arbitrary JSON-stringified value (e.g. a backtest
-   * train_window pair) - an unbroken string like that must wrap, not widen the
-   * table past its scroll container. */
+  /* A number (or a date, or a short identifier) must never break mid-token - that was
+   * the layout regression: "22,052.5" shattering into four stacked fragments once figures
+   * went larger and monospace. Cells default to nowrap; a cell that genuinely holds
+   * unbounded prose instead of a figure opts back into wrapping with .cell-wrap below, so
+   * the exception is scoped to the classes that actually need it rather than applied to
+   * every table cell. A cell that still doesn't fit scrolls inside its own .pane instead
+   * of wrapping or widening the page. */
+  white-space: nowrap;
+}
+.data-table td.cell-wrap, .param-table td.cell-wrap {
+  white-space: normal;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .data-table th:first-child, .data-table td:first-child,
 .param-table th:first-child, .param-table td:first-child { text-align: left; }
@@ -382,7 +396,12 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
 
 .kv-table { width: auto; }
 .kv-table th { text-align: left; color: var(--muted); padding-right: 14px; font-weight: 500; white-space: nowrap; }
-.kv-table td { text-align: left; overflow-wrap: anywhere; word-break: break-word; }
+/* Same fault as .data-table above: a parameter/input value is usually a figure (alpha,
+ * beta, a year, a count) and must never break mid-token. kvTable() in views/trace.js
+ * marks the exceptional cell - a non-numeric input, or a compound value it had to
+ * JSON-stringify - with .kv-value-prose, so only that cell opts back into wrapping. */
+.kv-table td { text-align: left; white-space: nowrap; }
+.kv-table td.kv-value-prose { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 
 tr.active-row, tr.claim-row.active { background: var(--illustrative-bg); }
 tr.verdict-missed { background: var(--error-bg); }
@@ -675,7 +694,9 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
   .app-rail { flex-direction: row; overflow-x: auto; padding: 6px; }
   .rail-link { border-left: none; border-bottom: 3px solid transparent; padding: 8px 12px; white-space: nowrap; }
   .rail-link.active { border-left-color: transparent; border-bottom-color: var(--rail-accent); }
-  .split-layout { grid-template-columns: 1fr; }
+  /* .has-selection must be named here too: it is more specific than the bare
+   * .split-layout rule above and would otherwise still win under 900px. */
+  .split-layout, .split-layout.has-selection { grid-template-columns: 1fr; }
   .app-main { padding: 12px; }
   .ask-form { flex-direction: column; }
   .ask-form select { align-self: flex-start; }
