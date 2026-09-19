@@ -4,9 +4,10 @@
  * each linking into Trace).
  */
 
-import { el, clear, chip, failurePanel } from "../dom.js";
+import { el, clear, chip, failurePanel, loadingPanel, emptyPanel } from "../dom.js";
 import { fmtNum } from "../format.js";
 import { api } from "../api.js";
+import { claimKindLabel, tagTerm, evidenceSectionLabel, pathTerm, MARKED_PATHS, codeTag, categoryName } from "../terms.js";
 
 export async function render(container, params, ctx) {
   const selectedClaim = params.get("claim") || "";
@@ -34,7 +35,7 @@ export async function render(container, params, ctx) {
 
 async function loadValidation(banner) {
   clear(banner);
-  banner.append(el("p", { class: "muted" }, ["Checking brain/ validation..."]));
+  banner.append(loadingPanel("Checking brain/ validation..."));
   const res = await api.get("/brain/validate");
   clear(banner);
   if (!res.ok) {
@@ -60,15 +61,19 @@ async function loadValidation(banner) {
 }
 
 function findingItem(f) {
+  // The message (from brainkit.validate) is already plain English; it is the primary text.
+  // The code is a secondary, muted identifier — never the only thing shown, never the lede.
   return el("li", {}, [
     chip(f.severity, `chip-${f.severity}`),
-    ` ${f.path}${f.line ? ":" + f.line : ""} [${f.code}] ${f.message}`,
+    " ",
+    `${f.path}${f.line ? ":" + f.line : ""} — ${f.message} `,
+    codeTag(f.code),
   ]);
 }
 
 async function loadList(pane, ctx, selectedClaim) {
   clear(pane);
-  pane.append(el("p", { class: "muted" }, ["Loading claims..."]));
+  pane.append(loadingPanel("Loading claims..."));
   const res = await api.get("/brain/claims");
   clear(pane);
   if (!res.ok) {
@@ -77,7 +82,11 @@ async function loadList(pane, ctx, selectedClaim) {
   }
   const claims = res.data;
   if (!claims.length) {
-    pane.append(el("p", { class: "muted" }, ["No claims ingested yet. Use Demo -> \"Ingest the brain\"."]));
+    pane.append(
+      emptyPanel("No claims ingested yet — the brain/ tree hasn't been indexed.", {
+        action: el("a", { href: "#view=demo", class: "btn btn-small" }, ["Run “Rebuild the brain index” in Demo →"]),
+      })
+    );
     return;
   }
   const table = el("table", { class: "data-table" });
@@ -86,7 +95,7 @@ async function loadList(pane, ctx, selectedClaim) {
     const tr = el("tr", { class: String(c.id) === String(selectedClaim) ? "active-row" : "" });
     const link = el("a", { href: `#view=brain&claim=${c.id}` }, [c.title || c.slug]);
     tr.append(
-      el("td", {}, [c.kind]),
+      el("td", {}, [claimKindLabel(c.kind), " ", codeTag(c.kind)]),
       el("td", {}, [link]),
       el("td", {}, [chip(c.status, `chip-status chip-${c.status}`)]),
       el("td", {}, [c.date || "-"]),
@@ -99,7 +108,7 @@ async function loadList(pane, ctx, selectedClaim) {
 
 async function loadDetail(pane, claimId, ctx) {
   clear(pane);
-  pane.append(el("p", { class: "muted" }, [`Loading claim #${claimId}...`]));
+  pane.append(loadingPanel(`Loading claim #${claimId}...`));
   const res = await api.get(`/brain/claims/${claimId}`);
   clear(pane);
   if (!res.ok) {
@@ -110,9 +119,14 @@ async function loadDetail(pane, claimId, ctx) {
 
   pane.append(el("h3", {}, [c.title || c.slug]));
   pane.append(
-    el("div", {}, [chip(c.status, `chip-status chip-${c.status}`), ` kind=${c.kind}  slug=${c.slug}  date=${c.date || "-"}`])
+    el("div", {}, [
+      chip(c.status, `chip-status chip-${c.status}`),
+      ` ${claimKindLabel(c.kind)} `,
+      codeTag(c.kind),
+      `  slug=${c.slug}  date=${c.date || "-"}`,
+    ])
   );
-  pane.append(el("div", { class: "muted" }, [`path: ${c.path || "-"}`]));
+  pane.append(el("div", { class: "muted" }, [`source file: ${c.path || "-"}`]));
 
   pane.append(
     el("div", {}, [
@@ -125,7 +139,10 @@ async function loadDetail(pane, claimId, ctx) {
     pane.append(
       el("div", {}, [
         el("strong", {}, ["quantified effect: "]),
-        `${c.effect.category_code} ${c.effect.year} = ${fmtNum(c.effect.value)} ${c.effect.unit}`,
+        categoryName(c.effect.category_code),
+        " ",
+        codeTag(c.effect.category_code),
+        ` · ${c.effect.year} = ${fmtNum(c.effect.value)} ${c.effect.unit}`,
       ])
     );
   }
@@ -133,11 +150,15 @@ async function loadDetail(pane, claimId, ctx) {
   pane.append(el("h4", {}, ["Evidence"]));
   const evList = el("ul", { class: "evidence-list" });
   for (const e of c.evidence || []) {
+    const t = tagTerm(e.tag_raw);
+    const tagChip = chip(t.label, "chip-tag");
+    tagChip.title = e.tag_raw;
     evList.append(
       el("li", {}, [
-        chip(e.tag_raw, "chip-tag"),
+        tagChip,
+        codeTag(e.tag_raw),
         e.resolved === false ? chip("unresolved", "chip-warning") : null,
-        el("span", { class: "muted" }, [` [${e.section}] `]),
+        el("span", { class: "muted" }, [` ${evidenceSectionLabel(e.section)}: `]),
         e.text,
       ])
     );
@@ -160,7 +181,7 @@ async function loadDetail(pane, claimId, ctx) {
 
 async function loadImpact(wrap, claimId, ctx) {
   clear(wrap);
-  wrap.append(el("p", { class: "muted" }, ["Loading impact..."]));
+  wrap.append(loadingPanel("Loading impact..."));
   const res = await api.get(`/brain/claims/${claimId}/impact`);
   clear(wrap);
   if (!res.ok) {
@@ -169,23 +190,32 @@ async function loadImpact(wrap, claimId, ctx) {
   }
   const rows = res.data;
   if (!rows.length) {
-    wrap.append(el("p", { class: "muted" }, ["This decision has not moved any plan figure yet. Apply it from the Demo view."]));
+    wrap.append(
+      emptyPanel("This decision has not moved any plan figure yet.", {
+        action: el("a", { href: "#view=demo", class: "btn btn-small" }, ["Apply decided effects in Demo →"]),
+      })
+    );
     return;
   }
   const table = el("table", { class: "data-table" });
   table.append(
-    el("tr", {}, ["scenario", "category", "year", "value", "path", "displaced default", ""].map((h) => el("th", {}, [h])))
+    el("tr", {}, ["scenario", "category", "year", "value", "how it got there", "displaced default", ""].map((h) => el("th", {}, [h])))
   );
   for (const r of rows) {
     const btn = el("button", { class: "btn btn-small" }, ["Trace"]);
     btn.addEventListener("click", () => ctx.navigate({ view: "trace", kind: "plan-value", id: r.plan_value_id }));
+    const t = pathTerm(r.path);
+    const marked = MARKED_PATHS.has(r.path);
+    const pchip = chip(t.label, `chip-path${marked ? " chip-path-marked chip-path-" + r.path : ""}`);
+    pchip.title = t.hint;
+    pchip.append(codeTag(r.path));
     table.append(
       el("tr", {}, [
         el("td", {}, [r.scenario_kind]),
-        el("td", {}, [r.category_code]),
+        el("td", {}, [categoryName(r.category_code), " ", codeTag(r.category_code)]),
         el("td", {}, [String(r.year)]),
         el("td", {}, [fmtNum(r.value)]),
-        el("td", {}, [chip(r.path, `chip-status chip-${r.path}`)]),
+        el("td", {}, [pchip]),
         el("td", {}, [r.displaced_default != null ? fmtNum(r.displaced_default) : "-"]),
         el("td", {}, [btn]),
       ])

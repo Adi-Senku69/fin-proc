@@ -7,6 +7,7 @@
 import { el, clear, chip, failurePanel } from "../dom.js";
 import { fmtNum } from "../format.js";
 import { api } from "../api.js";
+import { categoryName, pathTerm, codeTag } from "../terms.js";
 
 export async function render(container, params, ctx) {
   container.append(el("h2", {}, ["Demo"]));
@@ -51,13 +52,13 @@ export async function render(container, params, ctx) {
   });
 
   addStep(steps, {
-    title: "3. Ingest the brain",
-    endpoint: "POST /brain/ingest",
-    action: () => api.post("/brain/ingest"),
+    title: "3. Rebuild the brain index",
+    endpoint: "POST /brain/reindex",
+    action: () => api.post("/brain/reindex"),
     render: (out, data) => {
       out.append(
         kv("files_seen", data.files_seen),
-        kv("ingested", data.ingested),
+        kv("indexed", data.indexed),
         kv("skipped_unchanged", data.skipped_unchanged),
         kv("rejected", (data.rejected || []).length)
       );
@@ -69,7 +70,7 @@ export async function render(container, params, ctx) {
       if ((data.findings || []).length) {
         const list = el("ul", { class: "finding-list" });
         for (const f of data.findings) {
-          list.append(el("li", {}, [chip(f.severity, `chip-${f.severity}`), ` ${f.path} [${f.code}] ${f.message}`]));
+          list.append(el("li", {}, [chip(f.severity, `chip-${f.severity}`), ` ${f.path} — ${f.message} `, codeTag(f.code)]));
         }
         out.append(el("div", { class: "muted" }, ["findings:"]), list);
       }
@@ -115,8 +116,10 @@ export async function render(container, params, ctx) {
       }
       out.append(el("div", { class: "muted" }, ["figures this decision moved:"]));
       for (const row of data.impact) {
+        const pt = pathTerm(row.path);
         const link = el("a", { href: `#view=trace&kind=plan-value&id=${row.plan_value_id}` }, [
-          `${row.category_code} · ${row.year} · ${row.scenario_kind}  =  ${fmtNum(row.value)} k EUR  (path=${row.path})  — open trace`,
+          `${categoryName(row.category_code)} · ${row.year} · ${row.scenario_kind}  =  ${fmtNum(row.value)} k EUR  ` +
+            `(${pt.label})  — open trace`,
         ]);
         out.append(el("div", { class: "impact-link" }, [link]));
       }

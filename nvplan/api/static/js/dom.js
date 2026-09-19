@@ -58,3 +58,21 @@ export function failurePanel(routeLabel, res, retry) {
   if (res.status === 404) return notAvailable(routeLabel, { retry });
   return errorPanel(res.status, res.message, { retry });
 }
+
+/** A considered loading state: a small spinner plus what is being fetched, so a view never
+ * sits on a bare "Loading..." paragraph indistinguishable from a stuck page. */
+export function loadingPanel(text = "Loading...") {
+  return el("div", { class: "state-panel loading-panel" }, [
+    el("span", { class: "spinner", "aria-hidden": "true" }),
+    el("span", {}, [text]),
+  ]);
+}
+
+/** A considered empty state: distinct from an error (nothing went wrong; there is simply
+ * nothing here yet), and distinct from a loading state. Never a blank panel (UI.md: "A blank
+ * panel is a bug"). ``opts.action`` renders a button (e.g. a link to the Demo view). */
+export function emptyPanel(text, opts = {}) {
+  const wrap = el("div", { class: "state-panel empty-panel" }, [el("div", { class: "empty-text" }, [text])]);
+  if (opts.action) wrap.append(opts.action);
+  return wrap;
+}

@@ -3,9 +3,10 @@
  * the stated priority order.
  */
 
-import { el, clear, chip, failurePanel } from "../dom.js";
+import { el, clear, chip, failurePanel, loadingPanel, emptyPanel } from "../dom.js";
 import { fmtDate, fmtNum } from "../format.js";
 import { api } from "../api.js";
+import { touchpointLabel, categoryName, codeTag } from "../terms.js";
 
 export async function render(container, params, ctx) {
   const selected = params.get("record") || "";
@@ -27,7 +28,7 @@ export async function render(container, params, ctx) {
 
 async function loadList(pane, selected) {
   clear(pane);
-  pane.append(el("p", { class: "muted" }, ["Loading records..."]));
+  pane.append(loadingPanel("Loading records..."));
   const res = await api.get("/ai/records");
   clear(pane);
   if (!res.ok) {
@@ -36,7 +37,11 @@ async function loadList(pane, selected) {
   }
   const rows = res.data;
   if (!rows.length) {
-    pane.append(el("p", { class: "muted" }, ["No AI records yet."]));
+    pane.append(
+      emptyPanel("No AI records yet — no touchpoint has run.", {
+        action: el("a", { href: "#view=ask", class: "btn btn-small" }, ["Ask a question →"]),
+      })
+    );
     return;
   }
   const table = el("table", { class: "data-table" });
@@ -45,10 +50,10 @@ async function loadList(pane, selected) {
     const tr = el("tr", { class: String(r.id) === String(selected) ? "active-row" : "" });
     tr.append(
       el("td", {}, [el("a", { href: `#view=ai&record=${r.id}` }, [String(r.id)])]),
-      el("td", {}, [r.touchpoint]),
+      el("td", {}, [touchpointLabel(r.touchpoint), " ", codeTag(r.touchpoint)]),
       el("td", {}, [chip(r.status, `chip-status chip-${r.status}`)]),
       el("td", {}, [r.model_version]),
-      el("td", {}, [r.category_code || "-"]),
+      el("td", {}, r.category_code ? [categoryName(r.category_code), " ", codeTag(r.category_code)] : ["-"]),
       el("td", {}, [r.year != null ? String(r.year) : "-"])
     );
     table.append(tr);
@@ -58,7 +63,7 @@ async function loadList(pane, selected) {
 
 async function loadDetail(pane, id) {
   clear(pane);
-  pane.append(el("p", { class: "muted" }, [`Loading record #${id}...`]));
+  pane.append(loadingPanel(`Loading record #${id}...`));
   const res = await api.get(`/ai/records/${id}`);
   clear(pane);
   if (!res.ok) {
@@ -67,10 +72,11 @@ async function loadDetail(pane, id) {
   }
   const r = res.data;
 
-  pane.append(el("h3", {}, [`Record #${r.id} — ${r.touchpoint}`]));
+  pane.append(el("h3", {}, [`Record #${r.id} — ${touchpointLabel(r.touchpoint)}`]));
   pane.append(
     el("div", {}, [
       chip(r.status, `chip-status chip-${r.status}`),
+      codeTag(r.touchpoint),
       ` model=${r.model_version}  confirmed_by=${r.confirmed_by || "-"}  confirmed_at=${fmtDate(r.confirmed_at)}`,
     ])
   );

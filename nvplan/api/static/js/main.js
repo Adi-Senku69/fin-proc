@@ -12,9 +12,11 @@ import * as brain from "./views/brain.js";
 import * as statements from "./views/statements.js";
 import * as backtest from "./views/backtest.js";
 import * as airecords from "./views/airecords.js";
+import * as ask from "./views/ask.js";
 
 const RAIL_VIEWS = [
   { key: "demo", label: "Demo" },
+  { key: "ask", label: "Ask" },
   { key: "plan", label: "Plan" },
   { key: "trace", label: "Trace" },
   { key: "brain", label: "Brain" },
@@ -24,6 +26,7 @@ const RAIL_VIEWS = [
 ];
 
 registerView("demo", demo);
+registerView("ask", ask);
 registerView("plan", plan);
 registerView("trace", trace);
 registerView("brain", brain);

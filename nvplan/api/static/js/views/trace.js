@@ -4,12 +4,10 @@
  * Brain view's impact links can reuse the same renderer instead of duplicating it.
  */
 
-import { el, clear, chip, failurePanel } from "../dom.js";
+import { el, clear, chip, failurePanel, loadingPanel } from "../dom.js";
 import { fmtNum, fmtDate, fmtParam } from "../format.js";
 import { api } from "../api.js";
-
-const PATH_LABELS = { valorized: "valorized", ai_proposed: "AI proposed", cascaded: "cascaded", decided: "decided" };
-const MARKED_PATHS = new Set(["decided", "ai_proposed"]);
+import { pathTerm, MARKED_PATHS, paramTerm, tagTerm, touchpointLabel, codeTag, evidenceSectionLabel } from "../terms.js";
 
 export async function fetchTrace(kind, id) {
   const path = kind === "statement-line" ? `/trace/statement-line/${id}` : `/trace/plan-value/${id}`;
@@ -18,15 +16,29 @@ export async function fetchTrace(kind, id) {
 
 function pathBadge(path) {
   if (!path) return null;
+  const t = pathTerm(path);
   const marked = MARKED_PATHS.has(path);
-  return el("span", { class: `path-badge path-${path}${marked ? " path-marked" : ""}` }, [PATH_LABELS[path] || path]);
+  const badge = el("span", { class: `path-badge path-${path}${marked ? " path-marked" : ""}` }, [t.label]);
+  badge.title = t.hint;
+  badge.append(codeTag(path));
+  return badge;
 }
 
-function kvTable(entries) {
+/** A parameter's kv rows get the plain label as the row header and the raw key/symbol as a
+ * secondary, muted tag (UI.md: "the identifier is never the only thing shown"). Any other
+ * derivation's inputs/parameters (not a Parameter row) keep the raw key, since most of those
+ * (a category code, a formula input) already read fine on their own. */
+function kvTable(entries, { termed = false } = {}) {
   if (!entries.length) return null;
   const table = el("table", { class: "kv-table" });
   for (const [k, v] of entries) {
-    table.append(el("tr", {}, [el("th", {}, [k]), el("td", {}, [typeof v === "object" && v !== null ? JSON.stringify(v) : fmtParam(k, v)])]));
+    const term = termed ? paramTerm(k) : null;
+    const head = term
+      ? el("th", {}, [term.label, " ", codeTag(term.symbol || k)])
+      : el("th", {}, [k]);
+    table.append(
+      el("tr", {}, [head, el("td", {}, [typeof v === "object" && v !== null ? JSON.stringify(v) : fmtParam(k, v)])])
+    );
   }
   return table;
 }
@@ -41,10 +53,12 @@ function pointsTable(points) {
 }
 
 function aiBlock(ai) {
+  const tpChip = chip(touchpointLabel(ai.touchpoint), "chip-touchpoint");
+  tpChip.append(codeTag(ai.touchpoint));
   return el("div", { class: "ai-block" }, [
     el("div", { class: "block-title" }, ["AI proposal"]),
     el("div", {}, [
-      chip(ai.touchpoint, "chip-touchpoint"),
+      tpChip,
       " ",
       chip(ai.status, `chip-status chip-${ai.status}`),
       el("span", { class: "muted" }, [` model ${ai.model_version}`]),
@@ -73,7 +87,10 @@ function claimBlock(claim, opts) {
   wrap.append(el("div", { class: "block-title" }, ["Evidence"]));
   const evList = el("ul", { class: "evidence-list" });
   for (const e of claim.evidence || []) {
-    evList.append(el("li", {}, [chip(e.tag_raw, "chip-tag"), " ", e.text]));
+    const t = tagTerm(e.tag_raw);
+    const tagChip = chip(t.label, "chip-tag");
+    tagChip.title = e.tag_raw;
+    evList.append(el("li", {}, [tagChip, codeTag(e.tag_raw), " ", e.text]));
   }
   if (!(claim.evidence || []).length) evList.append(el("li", { class: "muted" }, ["(no evidence rows in the trace)"]));
   wrap.append(evList);
@@ -93,6 +110,7 @@ export function renderTree(container, node, opts = {}) {
   if (depth < 2 && !node.ref) details.open = true;
 
   const summary = el("summary", { class: "trace-summary" });
+  summary.append(el("span", { class: "trace-disclosure", "aria-hidden": "true" }, ["▸"]));
   summary.append(el("span", { class: "trace-label" }, [node.label || node.kind]));
   if (node.value !== null && node.value !== undefined) {
     summary.append(el("span", { class: "trace-value" }, [fmtNum(node.value) + " k EUR"]));
@@ -117,7 +135,7 @@ export function renderTree(container, node, opts = {}) {
   if (node.formula_text) body.append(el("div", { class: "formula" }, [node.formula_text]));
 
   const paramEntries = Object.entries(node.parameters || {}).filter(([k]) => !k.startsWith("_"));
-  const pt = kvTable(paramEntries);
+  const pt = kvTable(paramEntries, { termed: true });
   if (pt) body.append(el("div", {}, [el("div", { class: "block-title" }, ["parameters"]), pt]));
 
   const pts = pointsTable(node.inputs && node.inputs.points);
@@ -136,7 +154,7 @@ export function renderTree(container, node, opts = {}) {
 
   const kids = node.children || [];
   if (kids.length) {
-    const childrenWrap = el("div", { class: "trace-children" });
+    const childrenWrap = el("div", { class: `trace-children depth-guide-${depth % 6}` });
     for (const child of kids) renderTree(childrenWrap, child, { ...opts, depth: depth + 1 });
     details.append(childrenWrap);
   }
@@ -144,9 +162,15 @@ export function renderTree(container, node, opts = {}) {
   container.append(details);
 }
 
+/** The collapse/expand affordance UI.md asks for, at tree scope rather than per node: every
+ * <details> under ``root`` opens or closes together. */
+function setAllOpen(root, open) {
+  for (const d of root.querySelectorAll("details.trace-node")) d.open = open;
+}
+
 async function loadInto(body, kind, id, ctx) {
   clear(body);
-  body.append(el("p", { class: "muted" }, ["Loading trace..."]));
+  body.append(loadingPanel("Loading trace..."));
   const res = await fetchTrace(kind, id);
   clear(body);
   if (!res.ok) {
@@ -155,6 +179,11 @@ async function loadInto(body, kind, id, ctx) {
   }
 
   const toolbar = el("div", { class: "trace-toolbar" });
+  const expandBtn = el("button", { class: "btn btn-small" }, ["Expand all"]);
+  const collapseBtn = el("button", { class: "btn btn-small" }, ["Collapse all"]);
+  expandBtn.addEventListener("click", () => setAllOpen(body, true));
+  collapseBtn.addEventListener("click", () => setAllOpen(body, false));
+  toolbar.append(expandBtn, collapseBtn);
   const textBtn = el("button", { class: "btn btn-small" }, ["View as plain text"]);
   let textBox = null;
   textBtn.addEventListener("click", async () => {

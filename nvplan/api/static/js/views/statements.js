@@ -3,7 +3,7 @@
  * rather than asserted in prose. Kept simple per the stated priority order.
  */
 
-import { el, clear, chip, failurePanel } from "../dom.js";
+import { el, clear, chip, failurePanel, loadingPanel, emptyPanel } from "../dom.js";
 import { fmtNum } from "../format.js";
 import { api } from "../api.js";
 
@@ -39,7 +39,7 @@ export async function render(container, params, ctx) {
 
 async function load(pane, kind, statement, ctx) {
   clear(pane);
-  pane.append(el("p", { class: "muted" }, ["Loading statement..."]));
+  pane.append(loadingPanel("Loading statement..."));
   const res = await api.get(`/statements/${encodeURIComponent(kind)}?statement=${encodeURIComponent(statement)}`);
   clear(pane);
   if (!res.ok) {
@@ -68,7 +68,11 @@ async function load(pane, kind, statement, ctx) {
   }
 
   if (!grid.years.length) {
-    pane.append(el("p", { class: "muted" }, ["No statement lines for this scenario yet."]));
+    pane.append(
+      emptyPanel("No statement lines for this scenario yet.", {
+        action: el("a", { href: "#view=demo", class: "btn btn-small" }, ["Run the Demo loop →"]),
+      })
+    );
     return;
   }
 
