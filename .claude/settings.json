@@ -1,6 +1,6 @@
 {
   "hooks": {
-    "PostToolUse": [
+    "PreToolUse": [
       {
         "matcher": "Write|Edit",
         "hooks": [
@@ -8,7 +8,7 @@
             "type": "command",
             "command": "python3 .claude/hooks/validate_brain_file.py",
             "if": "Edit(brain/**)",
-            "statusMessage": "Validating brain file provenance",
+            "statusMessage": "Checking brain file provenance",
             "timeout": 30
           }
         ]

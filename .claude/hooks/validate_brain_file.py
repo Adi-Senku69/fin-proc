@@ -1,27 +1,51 @@
 #!/usr/bin/env python3
-"""PostToolUse hook — validates a just-written ``brain/`` markdown file.
+"""Brain-file validator hook — PreToolUse and PostToolUse.
 
-Mirrors the enforcement idea in the pm-brain reference (a hook and the ingest-time
-validator share the same rules, so a disabled hook can never let a bad file into the
-index — PLATFORM.md §9): fast feedback here, the backstop in ``brainkit.ingest``.
+PLATFORM.md §9.1 wants write-time enforcement, and doing that after the write has
+already landed checks the wrong text: by PostToolUse time the file on disk already
+holds whatever the tool just wrote, so a good file about to be broken passes and a
+bad file about to be fixed gets blocked. PreToolUse fires *before* the write, while
+disk still holds the OLD content, so this hook determines the PROPOSED content —
+what the tool is about to write — and validates that instead of the path.
 
-Reads the Claude Code PostToolUse JSON payload from stdin, pulls the file path(s) a
-Write/Edit just touched, ignores anything outside ``brain/``, runs
-``brainkit.validate.validate_file`` on each, and prints any error-level finding in a
-readable form. Exits non-zero (2) iff at least one error-level finding was produced;
-warnings are printed too but never fail the hook.
+Reads the Claude Code hook JSON payload from stdin. Determines the text to
+validate, in order:
 
-Standalone usage for testing (no stdin JSON needed):
+  - Write (``tool_input.content`` present): that string is the proposed content.
+  - Edit (``tool_input.old_string``/``new_string``): read the current file (empty
+    if it doesn't exist yet) and apply the replacement — honouring
+    ``replace_all`` — to compute the proposed content. If ``old_string`` isn't
+    found in the current file, don't guess: fall back to validating the file on
+    disk, and say so in the output.
+  - A batched edit shape (``tool_input.edits``, a list of ``old_string``/
+    ``new_string`` dicts, e.g. MultiEdit): apply them in order against the current
+    file, same fallback rule per edit.
+  - Anything else, or no determinable content: validate the file on disk, exactly
+    as a plain PostToolUse check would.
 
-    python3 .claude/hooks/validate_brain_file.py brain/decisions/2026-09-19-foo.md
+Any path outside a ``brain/`` tree is ignored (exit 0). The standalone form —
+``python3 .claude/hooks/validate_brain_file.py <path>`` — always validates that
+path from disk, unchanged.
 
-Registering this hook is a decision for the user to make, not this script: see the
-snippet at the bottom of this docstring for what would go in ``.claude/settings.json``
-(NOT added automatically as part of this phase):
+Blocking behaviour differs by event, because only PreToolUse can actually refuse
+the write:
+
+  - PreToolUse: on >=1 error-level finding, print a single JSON object on stdout
+    (the documented PreToolUse hook-output shape) with
+    ``permissionDecision: "deny"`` and exit 0 — Claude Code itself blocks the
+    tool call based on that JSON, not on this process's exit code. No error means
+    no stdout output.
+  - PostToolUse and standalone: unchanged from before — a human-readable message
+    on stderr and exit code 2 on >=1 error-level finding (the mechanism that feeds
+    a blocking error back at that point), exit 0 otherwise. Warnings alone never
+    block either event.
+
+Registering the PreToolUse form is a decision for the user/orchestrator to make in
+``.claude/settings.json`` (not this script's concern):
 
     {
       "hooks": {
-        "PostToolUse": [
+        "PreToolUse": [
           {
             "matcher": "Write|Edit",
             "hooks": [
@@ -45,6 +69,14 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+_PLATFORM_POINTER = (
+    "PLATFORM.md §4.2/§4.4: every evidence bullet needs exactly one provenance tag "
+    "from the closed enum, path-typed tags must resolve, and a decided decision needs "
+    "a specific, observable reversal condition. Fix the file above before continuing — "
+    "this same check runs again at ingest time and a file with an error like this is "
+    "never turned into a row (PLATFORM.md §9.2)."
+)
 
 
 def _find_brain_root(path: Path) -> Path | None:
@@ -72,87 +104,237 @@ def _read_stdin_payload() -> dict:
         return {}
 
 
-def _extract_file_paths(payload: dict) -> list[Path]:
-    """Pull every path a Write/Edit/MultiEdit-shaped ``tool_input`` touched."""
-    out: list[Path] = []
-    tool_input = payload.get("tool_input") or {}
+def _detect_event(payload: dict) -> str:
+    """``hook_event_name`` is authoritative when Claude Code sets it on the
+    payload. Absent that, infer it from shape: PostToolUse reports on a
+    tool that has already run, so — and only so — its payload carries a
+    ``tool_response`` key; PreToolUse fires before the tool runs and never has
+    one. A payload with neither is treated as PreToolUse (the safer default: it
+    means "don't yet assume the write happened")."""
+    name = payload.get("hook_event_name")
+    if isinstance(name, str) and name:
+        return name
+    return "PostToolUse" if "tool_response" in payload else "PreToolUse"
+
+
+def _extract_file_path(tool_input: dict) -> Path | None:
     for key in ("file_path", "filePath", "path"):
         value = tool_input.get(key)
         if isinstance(value, str) and value:
-            out.append(Path(value))
+            return Path(value)
+    return None
+
+
+def _read_current_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return ""
+
+
+def _apply_one_edit(current: str, old_string: object, new_string: object, replace_all: object) -> tuple[str | None, bool]:
+    """Returns (result, ok). ok is False when ``old_string``/``new_string`` aren't
+    both strings, or ``old_string`` isn't found in ``current`` — the "don't guess"
+    cases the caller must fall back to disk for."""
+    if not isinstance(old_string, str) or not isinstance(new_string, str):
+        return None, False
+    if old_string == "" or old_string not in current:
+        return None, False
+    if bool(replace_all):
+        return current.replace(old_string, new_string), True
+    return current.replace(old_string, new_string, 1), True
+
+
+def _proposed_content(tool_input: dict, path: Path) -> tuple[str | None, str | None]:
+    """Determine the text the tool is proposing to write to ``path``.
+
+    Returns ``(text, fallback_note)``. ``text`` is ``None`` when there is nothing
+    to validate but the file on disk (the caller then calls ``validate_file`` as
+    today); ``fallback_note`` is a human-readable string to surface only for the
+    "we tried to compute proposed content and couldn't" case (an absent
+    ``old_string``), not for tool shapes that never carried content at all.
+    """
+    content = tool_input.get("content")
+    if isinstance(content, str):
+        return content, None
+
+    old_string = tool_input.get("old_string")
+    new_string = tool_input.get("new_string")
+    if old_string is not None or new_string is not None:
+        current = _read_current_text(path)
+        result, ok = _apply_one_edit(current, old_string, new_string, tool_input.get("replace_all"))
+        if ok:
+            return result, None
+        return None, (
+            f"old_string not found in {path} (or the edit payload was malformed) — "
+            f"falling back to validating the file on disk"
+        )
+
     edits = tool_input.get("edits")
+    if isinstance(edits, list) and edits:
+        if not all(isinstance(e, dict) for e in edits):
+            return None, None  # unrecognised shape — silent disk fallback, as documented
+        current = _read_current_text(path)
+        for edit in edits:
+            result, ok = _apply_one_edit(current, edit.get("old_string"), edit.get("new_string"), edit.get("replace_all"))
+            if not ok:
+                return None, (
+                    f"a batched edit's old_string was not found in {path} — "
+                    f"falling back to validating the file on disk"
+                )
+            current = result
+        return current, None
+
+    return None, None  # no determinable content — silent disk fallback, as documented
+
+
+def _findings_for(path: Path, proposed_text: str | None) -> tuple[list, list, str | None]:
+    """Returns (errors, warnings, skip_reason). skip_reason is set (and the lists
+    empty) when this path is not this hook's concern at all."""
+    from brainkit.validate import validate_content, validate_file  # deferred: keep stdlib-only import cost near zero when idle
+
+    path = path.resolve()
+    if path.suffix != ".md":
+        return [], [], "not-markdown"
+
+    brain_root = _find_brain_root(path)
+    if brain_root is None:
+        return [], [], "outside-brain"
+
+    if proposed_text is not None:
+        findings = validate_content(proposed_text, path=path, brain_root=brain_root)
+    else:
+        if not path.exists():
+            return [], [], "no-content-and-missing"
+        findings = validate_file(path, brain_root=brain_root)
+
+    errors = [f for f in findings if f.severity == "error"]
+    warnings = [f for f in findings if f.severity == "warning"]
+    return errors, warnings, None
+
+
+def _rel(path: Path) -> Path:
+    brain_root = _find_brain_root(path)
+    if brain_root is None:
+        return path
+    try:
+        return path.relative_to(brain_root.parent)
+    except ValueError:
+        return path
+
+
+def _format_findings(errors: list, warnings: list, fallback_note: str | None) -> tuple[str, str]:
+    """Returns (warning_text, error_text) — either may be empty."""
+    warning_text = ""
+    if warnings:
+        lines = [f"{len(warnings)} warning(s):"]
+        for finding in warnings:
+            loc = f" (line {finding.line})" if finding.line is not None else ""
+            lines.append(f"  - {finding.code}{loc}: {finding.message}")
+        warning_text = "\n".join(lines)
+
+    error_text = ""
+    if errors:
+        lines = [f"{len(errors)} BLOCKING error(s):"]
+        for finding in errors:
+            loc = f" (line {finding.line})" if finding.line is not None else ""
+            lines.append(f"  - {finding.code}{loc}: {finding.message}")
+        if fallback_note:
+            lines.append(fallback_note)
+        lines.append("")
+        lines.append(_PLATFORM_POINTER)
+        error_text = "\n".join(lines)
+
+    return warning_text, error_text
+
+
+def _emit_pre_tool_deny(rel: Path, error_text: str) -> None:
+    reason = f"{rel} — {error_text}"
+    payload = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+    print(json.dumps(payload))
+
+
+def _run_human(path: Path, proposed_text: str | None, fallback_note: str | None) -> int:
+    """Shared PostToolUse / standalone reporting: stderr message, exit 2 on error."""
+    errors, warnings, skip_reason = _findings_for(path, proposed_text)
+    if skip_reason is not None:
+        return 0
+
+    rel = _rel(path.resolve())
+    warning_text, error_text = _format_findings(errors, warnings, fallback_note)
+
+    if warning_text:
+        print(f"[validate_brain_file] {rel} — {warning_text}", file=sys.stderr)
+
+    if not errors:
+        return 0
+
+    print(f"[validate_brain_file] {rel} — {error_text}", file=sys.stderr)
+    return 2
+
+
+def check_file(path: Path) -> int:
+    """Standalone / PostToolUse: validate one file from disk. Returns 0 or 2."""
+    return _run_human(path, proposed_text=None, fallback_note=None)
+
+
+def _handle_pre_tool_use(payload: dict) -> int:
+    tool_input = payload.get("tool_input") or {}
+    path = _extract_file_path(tool_input)
+    if path is None:
+        return 0
+
+    proposed_text, fallback_note = _proposed_content(tool_input, path)
+    errors, warnings, skip_reason = _findings_for(path, proposed_text)
+    if skip_reason is not None:
+        return 0
+
+    if errors:
+        rel = _rel(path.resolve())
+        _, error_text = _format_findings(errors, warnings, fallback_note)
+        _emit_pre_tool_deny(rel, error_text)
+    return 0
+
+
+def _handle_post_tool_use(payload: dict) -> int:
+    tool_input = payload.get("tool_input") or {}
+    path = _extract_file_path(tool_input)
+    if path is not None:
+        return check_file(path)
+
+    # Legacy/batched shape: multiple file_paths nested under individual edits.
+    edits = tool_input.get("edits")
+    worst = 0
     if isinstance(edits, list):
         for edit in edits:
             if isinstance(edit, dict):
                 fp = edit.get("file_path") or edit.get("filePath")
                 if isinstance(fp, str) and fp:
-                    out.append(Path(fp))
-    seen: set[str] = set()
-    deduped: list[Path] = []
-    for p in out:
-        key = str(p.resolve())
-        if key not in seen:
-            seen.add(key)
-            deduped.append(p)
-    return deduped
-
-
-def check_file(path: Path) -> int:
-    """Validate one file. Returns 0 (clean, or not our concern) or 2 (error found)."""
-    from brainkit.validate import validate_file  # deferred: keep stdlib-only import cost near zero when idle
-
-    path = path.resolve()
-    if not path.exists() or path.suffix != ".md":
-        return 0
-
-    brain_root = _find_brain_root(path)
-    if brain_root is None:
-        return 0  # not under a brain/ tree — not this hook's concern
-
-    findings = validate_file(path, brain_root=brain_root)
-    errors = [f for f in findings if f.severity == "error"]
-    warnings = [f for f in findings if f.severity == "warning"]
-
-    rel = path.relative_to(brain_root.parent)
-
-    if warnings:
-        print(f"[validate_brain_file] {rel} — {len(warnings)} warning(s):", file=sys.stderr)
-        for finding in warnings:
-            loc = f" (line {finding.line})" if finding.line is not None else ""
-            print(f"  - {finding.code}{loc}: {finding.message}", file=sys.stderr)
-
-    if not errors:
-        return 0
-
-    print(f"[validate_brain_file] {rel} — {len(errors)} BLOCKING error(s):", file=sys.stderr)
-    for finding in errors:
-        loc = f" (line {finding.line})" if finding.line is not None else ""
-        print(f"  - {finding.code}{loc}: {finding.message}", file=sys.stderr)
-    print(
-        "\nPLATFORM.md §4.2/§4.4: every evidence bullet needs exactly one provenance tag "
-        "from the closed enum, path-typed tags must resolve, and a decided decision needs "
-        "a specific, observable reversal condition. Fix the file above before continuing — "
-        "this same check runs again at ingest time and a file with an error like this is "
-        "never turned into a row (PLATFORM.md §9.2).",
-        file=sys.stderr,
-    )
-    return 2
+                    worst = max(worst, check_file(Path(fp)))
+    return worst
 
 
 def main() -> int:
     if len(sys.argv) > 1:
-        paths = [Path(a) for a in sys.argv[1:]]
-    else:
-        payload = _read_stdin_payload()
-        paths = _extract_file_paths(payload)
+        worst = 0
+        for arg in sys.argv[1:]:
+            worst = max(worst, check_file(Path(arg)))
+        return worst
 
-    if not paths:
+    payload = _read_stdin_payload()
+    if not payload:
         return 0
 
-    worst = 0
-    for path in paths:
-        worst = max(worst, check_file(path))
-    return worst
+    event = _detect_event(payload)
+    if event == "PreToolUse":
+        return _handle_pre_tool_use(payload)
+    return _handle_post_tool_use(payload)
 
 
 if __name__ == "__main__":

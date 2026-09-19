@@ -6,6 +6,7 @@ an error-level finding under ``strict`` ingestion is never turned into a Claim r
 from __future__ import annotations
 
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -136,7 +137,21 @@ def _collection_of(path: Path, brain_root: Path) -> str | None:
     return None
 
 
-def validate_file(path: str | Path, *, brain_root: str | Path) -> list[Finding]:
+def validate_content(text: str, *, path: str | Path, brain_root: str | Path) -> list[Finding]:
+    """Apply every structural check to ``text`` as though it were the on-disk
+    contents of ``path`` — same collection dispatch, same shape sniffing, same
+    ``_SCHEMA.md`` / ``_examples/`` severity downgrade, same finding codes.
+
+    This is what makes pre-write validation possible (PLATFORM.md §9.1): a
+    PreToolUse hook fires before a Write/Edit lands, so the file on disk still
+    holds the *old* content — validating that would check the wrong text. Every
+    check here runs against the *proposed* ``text`` instead.
+
+    ``path`` need not exist on disk (a brand-new file has no old content to read),
+    but path-typed provenance tags found in ``text`` still resolve against the real
+    filesystem relative to ``path`` — a link target is a different file and
+    genuinely must exist, proposed or not.
+    """
     path = Path(path)
     brain_root = Path(brain_root)
     exempt = _is_exempt(path, brain_root)
@@ -146,8 +161,7 @@ def validate_file(path: str | Path, *, brain_root: str | Path) -> list[Finding]:
         sev: Severity = "warning" if (exempt and severity == "error") else severity
         findings.append(Finding(path=path, line=line, code=code, message=message, severity=sev))
 
-    raw_text = path.read_text(encoding="utf-8")
-    clean_text = strip_code_spans(raw_text)
+    clean_text = strip_code_spans(text)
 
     collection = _collection_of(path, brain_root)
     directory_kind: ClaimKind | None = {
@@ -164,7 +178,7 @@ def validate_file(path: str | Path, *, brain_root: str | Path) -> list[Finding]:
     # own in P1 (brainkit.parse._parse_generic_file) and are left exactly as before.
     shape: ClaimKind | None = None
     if collection not in ("ingestion", "knowledge"):
-        shape = sniff_record_shape(raw_text)
+        shape = sniff_record_shape(text)
 
     effective_kind = directory_kind
     if shape is not None and shape is not directory_kind:
@@ -187,12 +201,22 @@ def validate_file(path: str | Path, *, brain_root: str | Path) -> list[Finding]:
     is_decision = effective_kind is ClaimKind.decision
     is_hypothesis = effective_kind is ClaimKind.hypothesis
 
-    if is_decision:
-        parsed: ParsedFile = parse_decision_file(path)
-    elif is_hypothesis:
-        parsed = parse_hypothesis_file(path)
-    else:
-        parsed = parse_brain_file(path)
+    # brainkit.parse's parse_*_file functions read their own bytes from disk, so to
+    # parse `text` (the proposed content, which may not match — or may not even
+    # exist — on disk) rather than whatever is actually there, we materialize it in
+    # a scratch file and parse that instead. Nothing below this point reads `path`
+    # itself for content; the real `path` is still used, untouched, for exemption,
+    # collection, filename and link-resolution checks (a scratch location would
+    # answer those questions wrongly).
+    with tempfile.TemporaryDirectory() as scratch_dir:
+        scratch_path = Path(scratch_dir) / (path.name or "content.md")
+        scratch_path.write_text(text, encoding="utf-8")
+        if is_decision:
+            parsed: ParsedFile = parse_decision_file(scratch_path)
+        elif is_hypothesis:
+            parsed = parse_hypothesis_file(scratch_path)
+        else:
+            parsed = parse_brain_file(scratch_path)
 
     # --- orphan_evidence: every evidence bullet carries exactly one provenance tag.
     all_placeholder_rows: set[str] = set()
@@ -286,6 +310,13 @@ def validate_file(path: str | Path, *, brain_root: str | Path) -> list[Finding]:
             add("bad_filename", f"decision filename does not match YYYY-MM-DD-<slug>.md: {path.name!r}")
 
     return findings
+
+
+def validate_file(path: str | Path, *, brain_root: str | Path) -> list[Finding]:
+    path = Path(path)
+    brain_root = Path(brain_root)
+    text = path.read_text(encoding="utf-8")
+    return validate_content(text, path=path, brain_root=brain_root)
 
 
 def validate_tree(brain_root: str | Path) -> list[Finding]:
