@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from provenance import TagKind, parse_decision_status, parse_hypothesis_status, parse_row, parse_tags, resolve_path, strip_code_spans
+from provenance import ClaimKind, TagKind, parse_decision_status, parse_hypothesis_status, parse_row, parse_tags, resolve_path, strip_code_spans
 
-from brainkit.parse import ParsedFile, parse_brain_file
+from brainkit.parse import ParsedFile, parse_brain_file, parse_decision_file, parse_hypothesis_file, sniff_record_shape
 
 Severity = Literal["error", "warning"]
 
@@ -36,6 +36,16 @@ REQUIRED_DECISION_HEADINGS = (
 REQUIRED_HYPOTHESIS_HEADINGS = ("Meta",)
 
 PATH_TAG_KINDS = (TagKind.ingestion, TagKind.source)
+
+# Directories whose record type is identified by location alone (PLATFORM.md §5).
+# A file outside all four gets no free pass: it is classified by content shape
+# instead (rule 2/3/4 of the validation-hole fix below).
+MODELED_COLLECTIONS = ("decisions", "hypotheses", "ingestion", "knowledge")
+
+_SHAPE_TARGET_DIR = {
+    ClaimKind.decision: "decisions/",
+    ClaimKind.hypothesis: "hypotheses/",
+}
 
 
 @dataclass(frozen=True)
@@ -64,6 +74,21 @@ def _is_placeholder_row(row: str) -> bool:
     return bool(_PLACEHOLDER_RE.search(row))
 
 
+def _collection_of(path: Path, brain_root: Path) -> str | None:
+    """The top-level modeled collection ``path`` sits directly under, relative to
+    ``brain_root`` — ``None`` for the brain root itself or any unmodeled
+    subdirectory (``source/`` included). Location, not the literal string
+    "decisions" appearing anywhere in the absolute path, is what counts."""
+    try:
+        rel = path.resolve().relative_to(brain_root.resolve())
+    except ValueError:
+        rel = path
+    parts = rel.parts
+    if len(parts) >= 2 and parts[0] in MODELED_COLLECTIONS:
+        return parts[0]
+    return None
+
+
 def validate_file(path: str | Path, *, brain_root: str | Path) -> list[Finding]:
     path = Path(path)
     brain_root = Path(brain_root)
@@ -74,13 +99,53 @@ def validate_file(path: str | Path, *, brain_root: str | Path) -> list[Finding]:
         sev: Severity = "warning" if (exempt and severity == "error") else severity
         findings.append(Finding(path=path, line=line, code=code, message=message, severity=sev))
 
-    parsed: ParsedFile = parse_brain_file(path)
-    parts = set(path.parts)
-    is_decision = "decisions" in parts
-    is_hypothesis = "hypotheses" in parts
-
     raw_text = path.read_text(encoding="utf-8")
     clean_text = strip_code_spans(raw_text)
+
+    collection = _collection_of(path, brain_root)
+    directory_kind: ClaimKind | None = {
+        "decisions": ClaimKind.decision,
+        "hypotheses": ClaimKind.hypothesis,
+    }.get(collection)
+
+    # --- misplaced_record / unmodeled_file: every .md under brain/ gets validated
+    # (PLATFORM.md §9). decisions/ and hypotheses/ pin a record type by location, but
+    # content can still contradict it (a hypothesis-shaped file dropped in
+    # decisions/); everywhere else — the brain root, source/, or any other stray
+    # directory — location says nothing at all, so content shape is the only
+    # signal. ingestion/ and knowledge/ carry no evidence-heading contract of their
+    # own in P1 (brainkit.parse._parse_generic_file) and are left exactly as before.
+    shape: ClaimKind | None = None
+    if collection not in ("ingestion", "knowledge"):
+        shape = sniff_record_shape(raw_text)
+
+    effective_kind = directory_kind
+    if shape is not None and shape is not directory_kind:
+        effective_kind = shape
+        current_where = f"{collection}/" if collection else "outside any modeled collection"
+        add(
+            "misplaced_record",
+            f"{path.name} is {shape.value}-shaped but sits in {current_where}, not "
+            f"in {_SHAPE_TARGET_DIR[shape]} where {shape.value} records belong",
+        )
+    elif directory_kind is None and shape is None and collection is None:
+        add(
+            "unmodeled_file",
+            f"{path.name} is outside every modeled brain/ collection "
+            f"(decisions/, hypotheses/, ingestion/, knowledge/) and does not "
+            f"match a known record shape",
+            severity="warning",
+        )
+
+    is_decision = effective_kind is ClaimKind.decision
+    is_hypothesis = effective_kind is ClaimKind.hypothesis
+
+    if is_decision:
+        parsed: ParsedFile = parse_decision_file(path)
+    elif is_hypothesis:
+        parsed = parse_hypothesis_file(path)
+    else:
+        parsed = parse_brain_file(path)
 
     # --- orphan_evidence: every evidence bullet carries exactly one provenance tag.
     all_placeholder_rows: set[str] = set()

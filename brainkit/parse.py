@@ -28,6 +28,13 @@ _DECISION_EVIDENCE_HEADINGS = {
     "explicitly not doing": "not_doing",
 }
 
+# Content shapes used to classify a file that sits outside every modeled collection
+# (brainkit.validate's "misplaced_record" / "unmodeled_file" hole-closing — see
+# PLATFORM.md §9). Directory tells us the record type inside decisions/, hypotheses/,
+# ingestion/ and knowledge/; outside those, shape is the only signal left.
+_SHAPE_BOLD_LABEL_RE = re.compile(r"\*\*Evidence\s+(?:for|against)\s*:\*\*", re.IGNORECASE)
+_DECISION_SHAPE_HEADINGS = {"evidence", "explicitly not doing"}
+
 
 @dataclass(frozen=True)
 class ParsedSection:
@@ -273,6 +280,27 @@ def _parse_generic_file(path: Path) -> ParsedFile:
         body_sha256=sha,
         errors=errors,
     )
+
+
+def sniff_record_shape(text: str) -> ClaimKind | None:
+    """Content-based classification for a file whose directory does not identify
+    its record type (brainkit.validate calls this only outside decisions/,
+    hypotheses/, ingestion/ and knowledge/ — see PLATFORM.md §9).
+
+    Decision-shaped: has a `## Evidence` or `## Explicitly NOT doing` heading.
+    Hypothesis-shaped: has a `**Evidence for:**` or `**Evidence against:**` bold
+    label. Fenced and inline code spans are stripped first, via
+    ``provenance.strip_code_spans``, so a documentation example inside a code block
+    can never trigger this. Returns ``None`` if the text matches neither shape.
+    """
+    clean = strip_code_spans(text)
+    for line in clean.splitlines():
+        m = _HEADING2_RE.match(line)
+        if m and m.group(1).strip().lower() in _DECISION_SHAPE_HEADINGS:
+            return ClaimKind.decision
+    if _SHAPE_BOLD_LABEL_RE.search(clean):
+        return ClaimKind.hypothesis
+    return None
 
 
 def parse_brain_file(path: str | Path) -> ParsedFile:

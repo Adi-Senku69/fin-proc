@@ -168,3 +168,34 @@ class TestComputedTagResolution:
         assert target_claim.kind.value == "computed"
         assert target_claim.path is None
         assert target_claim.slug == "computed:param:PERS"
+
+
+class TestMisplacedRecordRejection:
+    def test_misplaced_record_rejected_under_strict_creates_zero_claim_rows(self, tmp_brain: Path, prov_session):
+        """A hypothesis-shaped file dropped in decisions/ (brainkit.validate's
+        content-shape cross-check) must be refused exactly like an orphan-evidence
+        file: a misfiled record can never become a Claim row (PLATFORM.md §4.2, §9.2)."""
+        path = tmp_brain / "decisions" / "2026-01-01-misfiled-hypothesis.md"
+        path.write_text(
+            "# Hypotheses — misfiled\n\n"
+            "## Meta\n"
+            "- Feature: misfiled-hypothesis\n"
+            "- Created: 2026-01-01\n"
+            "- Last updated: 2026-01-01\n\n"
+            "## Value risk\n"
+            "### H-V1: something risky\n"
+            "- **Origin:** proactive\n"
+            "- **Confidence:** medium\n"
+            "- **Evidence for:**\n"
+            "  - a claim for the risk area (industry-knowledge)\n"
+            "- **Evidence against:**\n"
+            "  - a claim against the risk area (industry-knowledge)\n"
+            "- **Status:** open\n"
+        )
+
+        report = ingest_tree(prov_session, tmp_brain, strict=True)
+
+        assert path in report.rejected
+        assert any(f.code == "misplaced_record" for f in report.findings)
+        path_str = str(path.relative_to(tmp_brain).as_posix())
+        assert prov_session.execute(select(Claim).where(Claim.path == path_str)).scalars().all() == []

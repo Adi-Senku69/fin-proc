@@ -121,6 +121,73 @@ evidence, and the person who confirmed it. The existing confirmation gate is reu
 Ingest resolves that to the derivation row, so the decision's evidence is pinned to a specific
 calculation over specific inputs, not to a number someone retyped.
 
+### 7.1 The bridge contract (P2)
+
+**Decision schema gains one optional block**, valid only on a `decided` decision:
+
+```markdown
+## Quantified effect
+- category: REV
+- year: 2027
+- value: 22365.1
+- unit: kEUR
+```
+
+Validation adds three codes: `effect_on_undecided` (error, the block is present but status is not
+`decided`), `bad_effect` (error, unknown category, year outside the plan horizon, non-numeric or
+non-positive value, unit other than `kEUR`), and `effect_not_wired` (warning, a category other than
+`REV`, which parses and indexes but drives nothing in P2).
+
+**`bridge/` is the only package allowed to import both** `nvplan` and `brainkit`. Everything else stays
+decoupled. Its surface:
+
+```python
+# bridge/db.py
+def init_platform_db(engine) -> Engine        # creates BOTH metadatas in one SQLite file
+
+# bridge/lookup.py
+def make_derivation_lookup(session) -> Callable[[str], int | None]
+    # resolves a (computed, <key>) tag to a derivation row id by matching
+    # json_extract(derivation.inputs_json, '$._key')
+
+# bridge/effects.py
+@dataclass(frozen=True)
+class QuantifiedEffect:
+    claim_id: int; decision_slug: str; decision_title: str
+    category_code: str; year: int; value: float; unit: str
+    status: str; decided_on: date | None
+
+def decided_effects(session) -> list[QuantifiedEffect]      # from the claim index, decided only
+def revenue_override(effects) -> dict[int, Override]         # year -> Override, REV effects only
+```
+
+**`nvplan` changes, additive only.** `RevenueOverride` becomes
+`Mapping[int, tuple[float, int] | Override]` so every existing tuple caller keeps working, where:
+
+```python
+@dataclass(frozen=True)
+class Override:
+    value: float
+    ai_record_id: int | None = None
+    claim_id: int | None = None
+    formula_text: str = AI_OVERRIDE_FORMULA
+    label: str = ""
+```
+
+`plan_value` gains a nullable `claim_id`, a plain integer with no foreign key, consistent with §6's
+cross-package rule. A claim-sourced override writes `formula_text = "confirmed decision"` and records
+`claim_id`, `decision_slug`, `value` and the displaced `default_value` in the derivation inputs, so the
+discarded default stays traceable exactly as it does for a confirmed AI proposal.
+
+**Trace.** A plan value carrying a `claim_id` gets a `claim` block beside the existing `ai` block,
+holding the decision title, status, decided date, its evidence rows with their provenance tags, and its
+reversal condition. `render_trace` prints it. Both tables live in one SQLite file, so one session reads
+both; `init_platform_db` is what guarantees that.
+
+**Both directions must be demonstrable end to end**: a decided decision with a quantified effect
+recalculates the plan and every affected figure traces back to the decision and its evidence; and a
+decision citing `(computed, param:PERS)` resolves to the real derivation row.
+
 ## 8. Skill or code
 
 The test: **would two competent people, given the same inputs, be expected to produce the same
