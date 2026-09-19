@@ -69,6 +69,9 @@ class PlanPath(enum.Enum):
     valorized = "valorized"
     ai_proposed = "ai_proposed"
     cascaded = "cascaded"
+    # A claim-sourced (decided decision) revenue override (PLATFORM.md §7.1). Additive: the
+    # enum is stored by name, so existing rows using the other members are unaffected.
+    decided = "decided"
 
 
 class NoteSource(enum.Enum):
@@ -231,6 +234,11 @@ class PlanValue(Base):
     # NOT NULL: a plan value without a derivation cannot exist.
     derivation_id: Mapped[int] = mapped_column(ForeignKey("derivation.id"), nullable=False)
     ai_record_id: Mapped[int | None] = mapped_column(ForeignKey("ai_record.id"), nullable=True)
+    # Plain integer, no ForeignKey: the claim table (PLATFORM.md §6) lives in `provenance`'s
+    # own metadata, a separate package this module must not depend on (PLATFORM.md §6's
+    # cross-package rule - see provenance/models.py's decoupling note for the mirror image
+    # of this choice). Set only for a claim-sourced (decided decision) revenue override.
+    claim_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     scenario: Mapped[Scenario] = relationship(back_populates="plan_values")
     category: Mapped[Category] = relationship(back_populates="plan_values")

@@ -6,7 +6,9 @@ Every ``plan_value`` / ``statement_line`` / ``parameter`` row points at a
 :class:`TraceNode` tree, attaching the DB row that owns each derivation:
 
 * ``plan_value``      -> label "Personnel costs · 2028 · Base", path, value,
-                          and the ``ai`` block when the value is ``ai_proposed``
+                          the ``ai`` block when the value is ``ai_proposed``, and the
+                          ``claim`` block (decision title/status/evidence, PLATFORM.md
+                          §7.1) when the value carries a ``claim_id`` (``path=decided``)
 * ``statement_line``  -> "BS cash · 2028 · Base"
 * ``parameter``       -> the regression row (alpha, beta, R², v) + the points
 * ``actual``          -> the source anchor (``actual:REV:2025``) with its
@@ -45,6 +47,11 @@ from nvplan.db.models import (
     StatementLine,
 )
 
+# ``provenance`` is the shared provenance core (PLATFORM.md §7.1): importing it from here is
+# intended, not a layering violation. In a finance-only database the claim/evidence tables
+# don't exist at all - every lookup below is wrapped so that is never fatal to a trace.
+from provenance import Claim, Evidence
+
 __all__ = [
     "TraceNode",
     "trace_plan_value",
@@ -70,6 +77,7 @@ class TraceNode:
     inputs: dict[str, Any] = field(default_factory=dict)
     source_label: str | None = None
     ai: dict[str, Any] | None = None
+    claim: dict[str, Any] | None = None
     children: list[TraceNode] = field(default_factory=list)
     # bookkeeping
     key: str | None = None
@@ -97,7 +105,7 @@ class TraceNode:
         return {
             "kind": self.kind, "label": self.label, "value": self.value, "path": self.path,
             "formula_text": self.formula_text, "parameters": self.parameters, "inputs": self.inputs,
-            "source_label": self.source_label, "ai": self.ai, "key": self.key,
+            "source_label": self.source_label, "ai": self.ai, "claim": self.claim, "key": self.key,
             "derivation_id": self.derivation_id, "ref_id": self.ref_id, "ref": self.ref,
             "truncated": self.truncated, "meta": self.meta,
             "children": [c.to_dict() for c in self.children],
@@ -135,6 +143,43 @@ class _Lookup:
         if cat is None:
             return None
         return self.s.scalars(select(Actual).where(Actual.category_id == cat.id, Actual.year == year)).first()
+
+    def claim_block(self, claim_id: int) -> dict[str, Any] | None:
+        """Best-effort decision info for ``claim_id`` (PLATFORM.md §7.1): title, slug,
+        status, decided date, evidence rows with their provenance tags, and the reversal
+        condition when the index carries one.
+
+        Must degrade gracefully: in a finance-only database the ``claim``/``evidence``
+        tables don't exist at all, and even in a joint database the row may be missing
+        (e.g. a stale ``claim_id`` after the brain index was rebuilt). Either case yields
+        ``None`` - a trace must never fail because the brain index is absent or stale.
+        """
+        try:
+            claim = self.s.get(Claim, claim_id)
+            if claim is None:
+                return None
+            evidence = self.s.scalars(
+                select(Evidence).where(Evidence.claim_id == claim_id).order_by(Evidence.id)
+            ).all()
+            return {
+                "claim_id": claim.id,
+                "slug": claim.slug,
+                "title": claim.title,
+                "status": claim.status,
+                "decided_on": claim.date.isoformat() if claim.date else None,
+                "evidence": [{"text": e.text, "tag_raw": e.tag_raw} for e in evidence],
+                # Not a column on today's Claim model (PLATFORM.md §7.1: "if the index
+                # carries one") - stays None until/unless one is added there.
+                "reversal_condition": getattr(claim, "reversal_condition", None),
+            }
+        except Exception:
+            # Missing table (finance-only DB) or any other lookup failure: no claim block,
+            # never raise. Roll back so the session stays usable for the rest of the trace.
+            try:
+                self.s.rollback()
+            except Exception:
+                pass
+            return None
 
 
 def _ai_block(rec: AiRecord) -> dict[str, Any]:
@@ -182,6 +227,8 @@ def _node_for(d: Derivation, lk: _Lookup, depth: int) -> TraceNode:
             rec = lk.s.get(AiRecord, pv.ai_record_id)
             if rec is not None:
                 node.ai = _ai_block(rec)
+        if pv.claim_id is not None:
+            node.claim = lk.claim_block(pv.claim_id)
         return node
 
     sl = lk.statement_line(d.id)
@@ -412,6 +459,14 @@ def render_trace(node: TraceNode, *, indent: int = 0, width: int = 60, _child: b
         out.append(f"{pad}        · prompt (verbatim):")
         for ln in str(ai["prompt_text"]).splitlines() or [""]:
             out.append(f"{pad}          | {ln}")
+    if node.claim:
+        c = node.claim
+        out.append(f"{sub}claim: title={c['title']!r} status={c['status']} slug={c['slug']} "
+                   f"decided_on={c['decided_on']}")
+        if c.get("reversal_condition"):
+            out.append(f"{pad}        · reversal condition: {c['reversal_condition']}")
+        for e in c["evidence"]:
+            out.append(f"{pad}        · evidence [{e['tag_raw']}]: {e['text']}")
     if node.kind == "actual":
         src = node.source_label or "?"
         flag = f"  [{config.ILLUSTRATIVE_LABEL}]" if config.ILLUSTRATIVE_LABEL in str(src) else ""

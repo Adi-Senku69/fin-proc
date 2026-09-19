@@ -67,14 +67,61 @@ from nvplan.db.models import (
 from nvplan.db.session import category_map
 from nvplan.ingest.actuals import actuals_frame
 
-__all__ = ["PlanRun", "run_plan", "load_control_table", "KEY_FIELD", "AI_OVERRIDE_FORMULA"]
+__all__ = [
+    "PlanRun",
+    "run_plan",
+    "load_control_table",
+    "KEY_FIELD",
+    "AI_OVERRIDE_FORMULA",
+    "DECISION_OVERRIDE_FORMULA",
+    "Override",
+]
 
 #: Name of the entry in ``derivation.inputs_json`` that carries the ledger key.
 KEY_FIELD = "_key"
 #: formula_text of a base REV derivation that was replaced by a confirmed AI proposal.
 AI_OVERRIDE_FORMULA = "confirmed AI proposal"
+#: formula_text of a base REV derivation that was replaced by a decided decision
+#: (PLATFORM.md §7.1 - the bridge contract).
+DECISION_OVERRIDE_FORMULA = "confirmed decision"
 
-RevenueOverride = Mapping[int, tuple[float, int]]
+
+@dataclass(frozen=True)
+class Override:
+    """A revenue override, sourced from either a confirmed AI proposal (``ai_record_id``)
+    or a decided decision (``claim_id``) - PLATFORM.md §7.1. Exactly one of the two ids
+    must be set; the other stays ``None``."""
+
+    value: float
+    ai_record_id: int | None = None
+    claim_id: int | None = None
+    formula_text: str = AI_OVERRIDE_FORMULA
+    label: str = ""
+
+    def __post_init__(self) -> None:
+        if (self.ai_record_id is None) == (self.claim_id is None):
+            raise ValueError(
+                "Override must carry exactly one of ai_record_id or claim_id, got "
+                f"ai_record_id={self.ai_record_id!r} claim_id={self.claim_id!r}"
+            )
+
+
+def _as_override(entry: tuple[float, int] | Override) -> Override:
+    """Normalise one ``revenue_override`` entry to an :class:`Override`.
+
+    A bare ``(value, ai_record_id)`` tuple keeps its exact current meaning (an AI-sourced
+    override) so every existing caller / test keeps working unchanged; an :class:`Override`
+    is already validated (exactly one id) at construction and is returned as-is.
+    """
+    if isinstance(entry, Override):
+        return entry
+    value, ai_record_id = entry
+    return Override(value=float(value), ai_record_id=int(ai_record_id))
+
+
+#: ``year -> (value, ai_record_id)`` tuple (legacy, AI-sourced) or the widened
+#: :class:`Override` (AI- or claim-sourced) - PLATFORM.md §7.1.
+RevenueOverride = Mapping[int, tuple[float, int] | Override]
 
 
 @dataclass
@@ -129,11 +176,22 @@ def run_plan(
 ) -> PlanRun:
     """Compute the plan from the actuals in ``session`` and persist it (one transaction).
 
-    ``revenue_override`` maps ``year -> (value, ai_record_id)``: a confirmed AI
-    revenue proposal that replaces the valorized default for that year in the
-    base path. The REV plan values of that year (all scenarios: best / worst are
-    ``proposed x (1 + spread)``) get ``path=ai_proposed`` and ``ai_record_id``;
-    every cost value stays ``cascaded``.
+    ``revenue_override`` maps ``year -> entry``, where ``entry`` is either the legacy
+    ``(value, ai_record_id)`` tuple or an :class:`Override` (PLATFORM.md §7.1). Both replace
+    the valorized default for that year in the base path.
+
+    * AI-sourced (bare tuple, or an ``Override`` with ``ai_record_id``): behaves exactly as
+      before - the REV plan values of that year (all scenarios: best / worst are
+      ``proposed x (1 + spread)``) get ``path=ai_proposed`` and ``ai_record_id``, and the
+      base REV derivation's ``formula_text`` becomes :data:`AI_OVERRIDE_FORMULA`.
+    * Claim-sourced (an ``Override`` with ``claim_id``): the REV plan values of that year get
+      ``path=decided`` and ``claim_id`` instead, and the base REV derivation's
+      ``formula_text`` becomes :data:`DECISION_OVERRIDE_FORMULA`, with inputs
+      ``{claim_id, decision_slug, proposed_value, default_value}`` (``decision_slug`` comes
+      from ``Override.label``). The displaced default stays the derivation's parent either
+      way, so it remains traceable.
+
+    Every cost value stays ``cascaded`` in both cases.
 
     ``spread`` defaults to ``revenue_proposal.scenario_spread`` of the control table.
     Returns a :class:`PlanRun` with the ids of all inserted rows.
@@ -190,32 +248,55 @@ def run_plan(
                inputs={**d.inputs, "source_label": source_labels.get(("REV", t0), "")},
                parameters=d.parameters, parents=d.parents, replace=True)
 
-    override: dict[int, tuple[float, int]] = {}
+    override: dict[int, Override] = {}
     if revenue_override:
-        for y, (val, rec_id) in revenue_override.items():
+        for y, entry in revenue_override.items():
             y = int(y)
             if y not in years:
                 raise ValueError(f"revenue_override year {y} outside plan years {plan_years}")
-            override[y] = (float(val), int(rec_id))
-            base.loc[y] = float(val)
+            ov = _as_override(entry)
+            override[y] = ov
+            base.loc[y] = float(ov.value)
 
     # ---- 5. projection -------------------------------------------------------
     plan = project_all(fits, base, spread, t0=t0, depreciation=depr, ledger=ledger)
     plan["ai_record_id"] = pd.array([None] * len(plan), dtype="object")
+    plan["claim_id"] = pd.array([None] * len(plan), dtype="object")
 
-    for y, (val, rec_id) in override.items():
-        # the base REV derivation of that year records the override; parent = the default it replaced
-        ledger.add(
-            revenue_key("base", y),
-            AI_OVERRIDE_FORMULA,
-            inputs={"proposed_value": val, "ai_record_id": rec_id, "default_value": float(default_path.loc[y])},
-            parameters={"t": y, "touchpoint": "revenue_proposal"},
-            parents=(default_revenue_key(y),),
-            replace=True,
-        )
+    for y, ov in override.items():
         mask = (plan.category_code == "REV") & (plan.year == y)
-        plan.loc[mask, "path"] = "ai_proposed"
-        plan.loc[mask, "ai_record_id"] = rec_id
+        if ov.claim_id is not None:
+            # claim-sourced (a decided decision, PLATFORM.md §7.1): the base REV derivation
+            # of that year records the decision; parent = the default it replaced, exactly
+            # as for a confirmed AI proposal, so the discarded default stays traceable.
+            ledger.add(
+                revenue_key("base", y),
+                DECISION_OVERRIDE_FORMULA,
+                inputs={
+                    "claim_id": ov.claim_id,
+                    "decision_slug": ov.label,
+                    "proposed_value": ov.value,
+                    "default_value": float(default_path.loc[y]),
+                },
+                parameters={"t": y, "touchpoint": "decision"},
+                parents=(default_revenue_key(y),),
+                replace=True,
+            )
+            plan.loc[mask, "path"] = "decided"
+            plan.loc[mask, "claim_id"] = ov.claim_id
+        else:
+            # AI-sourced (a confirmed AI proposal): unchanged from before.
+            ledger.add(
+                revenue_key("base", y),
+                AI_OVERRIDE_FORMULA,
+                inputs={"proposed_value": ov.value, "ai_record_id": ov.ai_record_id,
+                        "default_value": float(default_path.loc[y])},
+                parameters={"t": y, "touchpoint": "revenue_proposal"},
+                parents=(default_revenue_key(y),),
+                replace=True,
+            )
+            plan.loc[mask, "path"] = "ai_proposed"
+            plan.loc[mask, "ai_record_id"] = ov.ai_record_id
 
     # DEPR plan rows point at depr:{year}; statements reference plan:{scenario}:DEPR:{year}.
     # Register that pass-through so both resolve to one derivation per plan value.
@@ -366,6 +447,7 @@ def _persist(
     n_pv = 0
     for row in plan.itertuples(index=False):
         rec_id = row.ai_record_id
+        claim_id = row.claim_id
         session.add(
             PlanValue(
                 scenario_id=scenario_ids[row.scenario],
@@ -375,6 +457,7 @@ def _persist(
                 path=PlanPath(row.path),
                 derivation_id=ids[row.derivation_key],
                 ai_record_id=None if rec_id is None or pd.isna(rec_id) else int(rec_id),
+                claim_id=None if claim_id is None or pd.isna(claim_id) else int(claim_id),
             )
         )
         n_pv += 1
