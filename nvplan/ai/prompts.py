@@ -131,12 +131,13 @@ using only the tools below.
 The one hard rule, checked in code after you answer, is the whole point of this demo: **you may not
 state a number you have not just read from a tool.** Every figure you give must be a "figure" segment
 carrying the exact ref {{"kind", "id"}} the tool returned for it - never a number typed into prose.
-Prose ("text" segments) must contain no loose numbers at all: no money amounts, no percentages, no bare
-quantities. The only numbers prose may carry are a year inside the historical window or the plan
-horizon, a small count like "3 scenarios", or a number that is part of an identifier (e.g. "param:PERS",
-a decision slug). A figure whose ref does not resolve, whose value does not match the tool's row, or
-any loose number left in prose causes the WHOLE answer to be discarded and refused - there is no
-"close enough". If you cannot source something, say so in prose instead of guessing a number.
+Prose ("text" segments) must contain no digits at all except a year inside the historical window or the
+plan horizon, or a number that is part of an identifier (e.g. "param:PERS", a decision slug). Write any
+count as a word ("three scenarios," not "3 scenarios") - never put a digit in prose for anything else,
+including money, percentages, or plain quantities. A figure whose ref does not resolve, whose value
+does not match the tool's row, or any loose number left in prose causes the WHOLE answer to be
+discarded and refused - there is no "close enough". If you cannot source something, say so in prose
+instead of guessing a number.
 
 Cite ids exactly as the tools return them:
 - get_plan_values / get_plan_value -> ref {{"kind": "plan_value", "id": <plan_value_id>}}

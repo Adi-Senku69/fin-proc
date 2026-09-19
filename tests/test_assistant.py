@@ -64,10 +64,16 @@ def _records(factory) -> list[AiRecord]:
 
 # --------------------------------------------------------------------------- the backstop scan (pure function)
 #
-# One parametrized table for the whole contract: every shape the scan must reject, every shape
-# it must let through, and (grouped at the end) the three escapes this fix closes. See
-# nvplan.ai.assistant's shape comments (_is_identifier_shape and friends) for the reasoning
-# behind each masked shape, and the module's "try to break it" residuals below the table.
+# One parametrized table for the whole contract: every shape the scan must reject, every shape it
+# must let through, and (grouped near the end) the digit-written counts that used to be exempted.
+# The count exemption ("3 scenarios" reads naturally, so let a small number through when a word
+# follows it) is gone: it needed a deny-list of unit words that could never be complete (measured
+# escapes included "10 bp", "15 pp", "5 GBP", "12 mn", "3 bio", "5 grand" - none of them in any
+# list). The rule is closed instead: prose may carry no digit except a year in window/horizon or
+# an identifier of a recognised shape; a count must be spelled out. See nvplan.ai.assistant's
+# shape comments (_is_identifier_shape and friends) for the reasoning behind each masked shape,
+# and the module's "try to break it" residuals below the table (all about identifier shapes now,
+# not the removed count exemption).
 LOOSE_FIGURES_CASES: list[tuple[str, list[str]]] = [
     # -- must still reject (money, percentages, negatives, bare numbers, out-of-range years,
     #    the German decimal form) --------------------------------------------------------------
@@ -76,19 +82,17 @@ LOOSE_FIGURES_CASES: list[tuple[str, list[str]]] = [
     ("A plain 500 k EUR swing.", ["500"]),
     ("A negative -245.7 swing.", ["-245.7"]),
     ("A negative −245.7 swing.", ["−245.7"]),  # unicode minus (U+2212), not ASCII hyphen
-    ("500 categories would not be a count.", ["500"]),
+    ("500 categories in the grid.", ["500"]),  # far above any plausible count either way
     ("A year outside both windows, 2031, is not free.", ["2031"]),
-    # German formatting (dot as thousands, comma as decimal): the "5" after the comma used to
-    # read as an allowed small count (the pre-existing "5 EUR" gap, now closed - "EUR" is a unit
-    # word, so both pieces reject).
+    # German formatting (dot as thousands, comma as decimal): two separate offending tokens.
     ("betrug 22.900,5 EUR", ["22.900", "5"]),
     ("param:PERS moved by 4.5% though.", ["4.5%"]),  # the identifier is masked; the figure beside it is not
-    # -- must still pass (years in window/horizon, year ranges, small counts, identifiers,
-    #    a full decision slug, "54-position", "Q1 2027", spelled-out counts) -------------------
+    # -- must still pass (years in window/horizon, year ranges, identifiers, a full decision
+    #    slug, "54-position", "Q1 2027", spelled-out counts) -------------------------------------
     ("In 2025 actuals landed above plan.", []),
     ("The horizon runs 2026-2030.", []),
-    ("There are 3 scenarios in the grid.", []),
     ("There are three scenarios in the grid.", []),
+    ("about fifteen accounts were affected", []),
     ("See param:PERS for the cost driver.", []),
     ("The decision 2026-09-20-sunset-legacy-import is decided.", []),
     ("the 54-position framework", []),
@@ -96,7 +100,7 @@ LOOSE_FIGURES_CASES: list[tuple[str, list[str]]] = [
     ("D2.P4 Wage growth", []),
     ("", []),
     ("No numbers here at all.", []),
-    # -- the three escapes this fix closes (decimal with no leading integer part, scientific
+    # -- three escapes an earlier fix closed (decimal with no leading integer part, scientific
     #    notation, digits immediately fused to a unit) ------------------------------------------
     ("beta is .488", [".488"]),
     ("revenue is 1e5", ["1e5"]),
@@ -111,24 +115,33 @@ LOOSE_FIGURES_CASES: list[tuple[str, list[str]]] = [
     ("500", ["500"]),  # a number alone, at the very start of the segment
     ("swing of 500", ["500"]),  # a number alone, at the very end of the segment
     ("22,,900 repeated separator", ["22", "900"]),  # a doubled separator still yields two offenders
-    # -- the two remaining holes this fix closes: the count exemption swallowing a spelled-out
-    #    unit ("15 percent" instead of "15%"), and a figure fused to a unit written BEFORE it
-    #    ("USD22900", the mirror of the trailing-fusion case above) --------------------------
+    ("revenue is USD22900 this year", ["USD22900"]),
+    ("revenue is kEUR22900 this year", ["kEUR22900"]),
+    ("code FY1234 is not a real year", ["FY1234"]),  # 4-digit fusion, but not a valid year - caught
+    # -- the count exemption is gone: a digit-written count now rejects no matter what follows
+    #    it. The first six rows are the live escapes measured before this change; the rest are
+    #    the old exemption's own "unit word" cases and the count phrasings it used to let
+    #    through - all now rejected by the one closed rule instead of a deny-list -------------
+    ("costs rose 10 bp", ["10"]),
+    ("margin fell 15 pp", ["15"]),
+    ("deviation was 5 GBP", ["5"]),
+    ("we booked 12 mn", ["12"]),
+    ("costs came to 3 bio", ["3"]),
+    ("roughly 5 grand over plan", ["5"]),
     ("costs are 5 EUR", ["5"]),
     ("that is 12 percent", ["12"]),
     ("margin of 15 percent", ["15"]),
-    ("margin of 15 percent.", ["15"]),  # punctuation right after the unit word doesn't shield it
+    ("margin of 15 percent.", ["15"]),  # punctuation right after the word doesn't shield it
     ("a swing of 8 per cent this year", ["8"]),
     ("tightened by 3 basis points", ["3"]),
     ("widened by 4 bps", ["4"]),
     ("grew 2 x versus last year", ["2"]),
     ("costs are 5 kEUR", ["5"]),
-    ("revenue is USD22900 this year", ["USD22900"]),
-    ("revenue is kEUR22900 this year", ["kEUR22900"]),
-    ("code FY1234 is not a real year", ["FY1234"]),  # 4-digit fusion, but not a valid year - caught
-    # -- must still pass: genuine counts (a real word, not a unit) and short/valid fused labels --
-    ("about 15 accounts were affected", []),
-    ("5 categories changed", []),
+    ("There are 3 scenarios in the grid.", ["3"]),  # the digit-written count itself now rejects
+    ("about 15 accounts were affected", ["15"]),
+    ("5 categories changed", ["5"]),
+    # -- must still pass: valid year fusions and short fused labels (identifier shapes, untouched
+    #    by this change) --------------------------------------------------------------------------
     ("FY2025 results were strong", []),  # 4-digit fusion, valid year in window - exempted
     ("the value was q15 exactly", []),  # 2-digit fusion - exempted (see residual test below)
 ]
@@ -205,17 +218,46 @@ def test_residual_hyphen_compound_label_is_capped_not_eliminated():
     assert loose_figures("22900-widgets shipped") == ["22900"]  # above the cap: rejected, not masked
 
 
-def test_residual_small_count_unit_word_is_a_named_list_not_a_grammar():
-    """Closed for the units named in the brief: ``_is_allowed_count`` now denies the exemption
-    when the following word is one of a finite, named list of units/measures ("percent", "EUR",
-    "k", ...; see ``_COUNT_UNIT_WORDS``/``_COUNT_UNIT_PHRASES``). "The cost was 5 EUR." and "The
-    cost was 12 kEUR." - the two examples the pre-fix gap was pinned on - are now both rejected
-    (moved into ``LOOSE_FIGURES_CASES`` as "costs are 5 EUR" / "costs are 5 kEUR"). What remains,
-    by construction, is a unit word OUTSIDE that list: this is a named-list gap, not a grammar of
-    "what counts as a unit", so a currency this list doesn't name still reads as a plain count."""
-    assert loose_figures("The cost was 5 EUR.") == ["5"]
-    assert loose_figures("The cost was 12 kEUR.") == ["12"]
-    assert loose_figures("The cost was 5 GBP.") == []  # GBP is not in the named unit list
+def test_loose_figures_closed_set_sweep():
+    """The rule is now statable as a closed set: prose may carry a digit only as a year in
+    window/horizon or as one of the recognised identifier shapes - never as a count, regardless
+    of what word follows it. This used to be a deny-list (``_COUNT_UNIT_WORDS``) that a currency
+    or unit outside the list could slip past (the old ``test_residual_small_count_unit_word_...``
+    pinned exactly that gap: "The cost was 5 GBP." used to pass because "GBP" wasn't named). With
+    the exemption removed there is no list left to be incomplete: every one of these rejects, no
+    matter how ordinary or exotic the word after the number is, and only the years/identifiers
+    sweep passes."""
+    years_and_identifiers = [
+        "In 2025 the plan held.",
+        "The horizon runs 2026-2030.",
+        "See param:PERS for detail.",
+        "Q1 2027 numbers.",
+        "the 54-position framework",
+        "The decision 2026-09-20-sunset-legacy-import is decided.",
+    ]
+    for text in years_and_identifiers:
+        assert loose_figures(text) == [], text
+
+    tails = [
+        "scenarios",
+        "accounts",
+        "categories",
+        "percent",
+        "bp",
+        "pp",
+        "GBP",
+        "mn",
+        "bio",
+        "grand",
+        "EUR",
+        "times",
+        "widgets",
+        "cases",
+    ]
+    for n in (1, 3, 5, 10, 12, 15, 19, 20):
+        for tail in tails:
+            text = f"There were {n} {tail} recorded."
+            assert loose_figures(text) == [str(n)], text
 
 
 # --------------------------------------------------------------------------- Touchpoint.assistant is additive

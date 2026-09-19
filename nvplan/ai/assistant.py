@@ -89,7 +89,9 @@ ASSISTANT_WRITE_TOOLS: frozenset[str] = frozenset({"record_revenue_proposal"})
 
 class TextSegment(BaseModel):
     type: Literal["text"] = "text"
-    text: str = Field(description="Prose. No numbers except a year, a small count, or an identifier.")
+    text: str = Field(
+        description="Prose. No digits except a year in window/horizon or an identifier - write any count as a word."
+    )
 
 
 class FigureRef(BaseModel):
@@ -226,9 +228,6 @@ _YEAR_ALLOWED: frozenset[int] = frozenset(
     range(config.REGRESSION_WINDOW[0], config.REGRESSION_WINDOW[1] + 1)
 ) | frozenset(range(config.PLAN_YEARS[0], config.PLAN_YEARS[1] + 1))
 
-# A count small enough to be an ordinal used in prose ("3 scenarios"), never a figure.
-_SMALL_COUNT_MAX = 20
-
 # Runs of identifier-ish characters that MIGHT be one of the explicit shapes below - never a
 # generic "mixes a letter and a digit" heuristic. That heuristic used to mask ANY such run,
 # which is how scientific notation ("1e5") and a fused unit ("22900kEUR") escaped: both mix a
@@ -340,61 +339,7 @@ def _mask_identifiers(text: str) -> str:
     return _IDENTIFIER_RUN_RE.sub(repl, text)
 
 
-# Hole 1 (UI.md Part 3 backstop scan): the small-count exemption only checked that the number was
-# small and a word followed - it never looked at what that word WAS, so "15 percent" or "5 EUR"
-# sailed through as though it were "3 scenarios". A number is only a genuine count when the word
-# after it is countable; deny the exemption when it is a unit or measure instead. Matched
-# case-insensitively; a one-word unit ("percent", "EUR", "k") denies it on its own, a two-word
-# unit ("per cent", "basis points") needs both words - "percentage points" doesn't need its own
-# phrase entry because "percentage" alone already denies. This is necessarily a finite, named
-# list, not a grammar of what counts as a unit - a unit outside it is a documented, narrower
-# residual (see the module's tests) rather than something this closes for good.
-_COUNT_UNIT_WORDS: frozenset[str] = frozenset(
-    {
-        "percent",
-        "percentage",
-        "pct",
-        "points",
-        "bps",
-        "eur",
-        "keur",
-        "euro",
-        "euros",
-        "usd",
-        "dollar",
-        "dollars",
-        "cent",
-        "cents",
-        "k",
-        "thousand",
-        "million",
-        "m",
-        "bn",
-        "billion",
-        "times",
-        "x",
-    }
-)
-_COUNT_UNIT_PHRASES: frozenset[tuple[str, str]] = frozenset({("per", "cent"), ("basis", "points")})
-
-# Up to two whitespace-separated words after the number, letters only - punctuation right after
-# either word (a period, a comma) is simply not part of the captured run, so it never blocks a
-# match.
-_COUNT_TAIL_WORDS_RE = re.compile(r"\s+([A-Za-z]+)(?:\s+([A-Za-z]+))?")
-
-
-def _is_count_unit_tail(tail: str) -> bool:
-    m = _COUNT_TAIL_WORDS_RE.match(tail)
-    if m is None:
-        return False
-    w1 = m.group(1).lower()
-    if w1 in _COUNT_UNIT_WORDS:
-        return True
-    w2 = m.group(2)
-    return w2 is not None and (w1, w2.lower()) in _COUNT_UNIT_PHRASES
-
-
-# Hole 2 (UI.md Part 3 backstop scan): a figure fused to a UNIT WRITTEN AFTER it ("22900kEUR") was
+# Hole (UI.md Part 3 backstop scan): a figure fused to a UNIT WRITTEN AFTER it ("22900kEUR") was
 # already caught by _NUMERIC_RE's trailing letter run; one fused to a unit written BEFORE it
 # ("USD22900") was not, because _NUMERIC_RE's leading boundary deliberately refuses to start a
 # match right after a letter (see its own comment) - that boundary stays as-is for _NUMERIC_RE,
@@ -423,23 +368,20 @@ def _is_allowed_year(token: str) -> bool:
     return token.isdigit() and len(token) == 4 and int(token) in _YEAR_ALLOWED
 
 
-def _is_allowed_count(masked: str, match: re.Match[str]) -> bool:
-    token = match.group(0)
-    if not token.isdigit() or len(token) > 2:  # a plain, small, unsigned integer only
-        return False
-    if int(token) > _SMALL_COUNT_MAX:
-        return False
-    tail = masked[match.end() :]
-    if re.match(r"\s+[A-Za-z]", tail) is None:  # "3 scenarios", not a bare "3"
-        return False
-    return not _is_count_unit_tail(tail)  # "3 scenarios" yes; "15 percent" / "5 EUR" no
-
-
 def loose_figures(text: str) -> list[str]:
-    """Number-like tokens in ``text`` that are not a year in window/horizon, a small count used
-    as an ordinal, or part of a word/identifier (UI.md Part 3's backstop scan). Empty when
-    ``text`` carries nothing to reject. A spelled-out number ("three scenarios") is never
-    flagged - it contains no digit at all.
+    """The rule, closed: prose may contain no digits except a year inside the historical window
+    or plan horizon, and identifiers of the recognised shapes (see ``_is_identifier_shape``).
+    Everything else is a loose figure.
+
+    There is deliberately no exemption for a count written in digits ("3 scenarios"): a
+    deny-list of the words that follow a bare number ("bp", "GBP", "mn", "grand", ...) can never
+    be complete, so the count exemption that used to key off that list has been removed rather
+    than patched again. A spelled-out count ("three scenarios") is unaffected - it contains no
+    digit at all and was never in scope of this scan.
+
+    Number-like tokens in ``text`` that are not a year in window/horizon or part of a
+    word/identifier (UI.md Part 3's backstop scan). Empty when ``text`` carries nothing to
+    reject.
 
     Two independent scans over the same masked text, merged back into text order: the ordinary
     numeric scan (``_NUMERIC_RE``, trailing fusion included) and the leading-fusion scan
@@ -453,7 +395,7 @@ def loose_figures(text: str) -> list[str]:
     found: list[tuple[int, str]] = list(_leading_fusions(masked))
     for m in _NUMERIC_RE.finditer(masked):
         token = m.group(0)
-        if _is_allowed_year(token) or _is_allowed_count(masked, m):
+        if _is_allowed_year(token):
             continue
         found.append((m.start(), token))
     found.sort(key=lambda pair: pair[0])
