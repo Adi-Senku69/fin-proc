@@ -35,6 +35,37 @@ whenever ``effect`` is given and lets step 3 (validate-before-write) refuse it �
 existing validator already raises ``effect_on_undecided`` for exactly this shape, so a
 caller who tries to hand a draft a quantified effect gets a clear, single-source-of-truth
 refusal instead of two different codes for the same fact.
+
+A draft must be promotable (closing the "dead on arrival" trap: a vague reversal
+condition, or anything else that only errors once a record is no longer ``pending``/
+``open``, was accepted at draft time and then bounced back at the human's desk the
+moment they made the one-line status edit the whole design asks them to make).
+``missing_reversal`` only fires on a ``decided`` decision, so a pending-status validate
+pass alone can never catch it. So after the pending-status pass finds no error, both
+``draft_decision`` and ``draft_hypotheses`` run **a second, additional** validate pass
+against a copy of the same rendered text with its status flipped to the value a human
+promotion would set it to (``decided`` / ``supported`` — ``provenance.lifecycle``'s own
+spelling, not a guess). Any error from that second pass refuses the draft too, wrapped
+so the message says the draft would fail *when promoted*, not that the pending file on
+disk is wrong (it isn't — nothing about the pending-status pass changes). This is
+additive, never a replacement: the pending-status pass still runs first and still
+refuses on its own terms.
+
+This also settles the one place the two passes would otherwise disagree.
+``effect_on_undecided`` fires on the pending-status pass for *any* ``## Quantified
+effect`` block, well-formed or not, because a drafted decision is never anything but
+``pending``. That means ``draft_decision`` already refuses before the promoted-status
+pass ever runs whenever ``effect`` is given — the same block that pending-status
+validation calls an error is one the promoted-status pass would call clean, but the
+promoted-status pass never gets a chance to say so, because the pending-status pass
+refuses first and unconditionally. There is no way to reach the promoted-status pass
+with an effect block attached (the renderer only emits one when ``effect`` is
+given, and giving one always trips ``effect_on_undecided``), so there is no gap for a
+caller to smuggle an effect through: the existing "an effect on a draft is always
+refused" behavior is unchanged, and it is what keeps the two passes from contradicting
+each other in practice. Ingestion records carry no lifecycle status (PLATFORM.md
+§12.4: "n/a, a record not a judgement"), so ``draft_ingestion`` has no promoted-status
+pass at all.
 """
 
 from __future__ import annotations
@@ -45,7 +76,7 @@ from datetime import date as _date
 from pathlib import Path
 from typing import Sequence
 
-from provenance import TagKind, parse_row, strip_code_spans
+from provenance import DecisionStatus, HypothesisStatus, TagKind, parse_row, strip_code_spans
 
 from brainkit.parse import parse_decision_file
 from brainkit.validate import Finding, validate_content
@@ -394,15 +425,91 @@ def _render_ingestion_text(*, title: str, date: str, summary: str, claims: Seque
     return "\n\n".join(parts) + "\n"
 
 
+# --------------------------------------------------------------------------- promotability
+
+
+def _promote_decision_status(rendered: str) -> str:
+    """A copy of a rendered ``pending`` decision with ``## Status`` flipped to the
+    value a human promotion sets (``decided``) — used only to run the promoted-status
+    validate pass below. Never written to disk; the real file always stays pending."""
+    pending_block = _section("Status", "pending")
+    decided_block = _section("Status", DecisionStatus.decided.value)
+    return rendered.replace(pending_block, decided_block, 1)
+
+
+def _promote_hypothesis_status(rendered: str) -> str:
+    """Same idea for a hypotheses file: every rendered ``- **Status:** open`` line
+    (there is one per hypothesis in the file) flipped to ``supported``, the value a
+    human promotion sets. A file can hold several hypotheses; all of them are checked
+    as promoted, since none of ``validate_content``'s checks read the specific status
+    value beyond "is this a valid enum member", so which one(s) a human would actually
+    promote first makes no difference to the result."""
+    open_line = "- **Status:** open"
+    supported_line = f"- **Status:** {HypothesisStatus.supported.value}"
+    return rendered.replace(open_line, supported_line)
+
+
+def _wrap_promotion_finding(finding: Finding, *, target: Path, promoted_status: str) -> Finding:
+    """Re-label an error found by the promoted-status pass so it reads as what it is:
+    not a defect in the pending file on disk (there isn't one — the pending-status
+    pass already found this draft clean), but a reason the *promotion* a human is
+    meant to do with a one-line status edit would itself be bounced back."""
+    return Finding(
+        path=target,
+        line=finding.line,
+        code="not_promotable",
+        message=(
+            f"this draft would be rejected once promoted to '{promoted_status}' "
+            f"({finding.code}: {finding.message}) — fix that before drafting, or the "
+            "promotion a human makes will fail instead of this draft"
+        ),
+        severity="error",
+    )
+
+
 # --------------------------------------------------------------------------- validate-then-write
 
 
-def _finish(target: Path, rendered: str, brain_root: Path, *, dry_run: bool) -> DraftResult:
-    """PLATFORM.md §12.3.3: validate the rendered text against the real target path,
-    write only when it is error-free, and never touch disk under dry_run or on refusal."""
+def _finish(
+    target: Path,
+    rendered: str,
+    brain_root: Path,
+    *,
+    dry_run: bool,
+    promoted_rendered: str | None = None,
+    promoted_status: str | None = None,
+) -> DraftResult:
+    """PLATFORM.md §12.3.3, extended: validate the rendered (pending/open) text
+    against the real target path exactly as before, and write only when it is
+    error-free — that gate is unchanged and still refuses on its own terms.
+
+    When ``promoted_rendered`` is given (decisions and hypotheses, not ingestion,
+    which carries no lifecycle status), a drafted record must also be *promotable*:
+    once the pending-status pass finds no error, a second pass validates a copy of
+    the same text with its status already flipped to ``promoted_status``. Any
+    error-level finding from that second pass refuses the draft too — a draft that
+    would fail the moment a human promotes it is refused now instead of at their
+    desk later. This is additive only: it can refuse a draft the first pass would
+    have accepted, but it never overrides or loosens what the first pass already
+    refused.
+
+    Never touches disk under dry_run or on either refusal.
+    """
     findings = validate_content(rendered, path=target, brain_root=brain_root)
-    has_error = any(f.severity == "error" for f in findings)
-    if has_error or dry_run:
+    if any(f.severity == "error" for f in findings):
+        return DraftResult(path=None, written=False, findings=findings, rendered=rendered)
+
+    if promoted_rendered is not None:
+        promotion_findings = validate_content(promoted_rendered, path=target, brain_root=brain_root)
+        promotion_errors = [f for f in promotion_findings if f.severity == "error"]
+        if promotion_errors:
+            wrapped = [
+                _wrap_promotion_finding(f, target=target, promoted_status=promoted_status or "")
+                for f in promotion_errors
+            ]
+            return DraftResult(path=None, written=False, findings=findings + wrapped, rendered=rendered)
+
+    if dry_run:
         return DraftResult(path=None, written=False, findings=findings, rendered=rendered)
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -471,7 +578,14 @@ def draft_decision(
         ambiguities=ambiguities,
         effect=effect,
     )
-    return _finish(target, rendered, brain_root, dry_run=dry_run)
+    return _finish(
+        target,
+        rendered,
+        brain_root,
+        dry_run=dry_run,
+        promoted_rendered=_promote_decision_status(rendered),
+        promoted_status=DecisionStatus.decided.value,
+    )
 
 
 def draft_hypotheses(
@@ -521,7 +635,14 @@ def draft_hypotheses(
         return _refuse(target, code, err)
 
     rendered = _render_hypotheses_text(title=title, feature_slug=feature_slug, brain_root=brain_root, hypotheses=coerced)
-    return _finish(target, rendered, brain_root, dry_run=dry_run)
+    return _finish(
+        target,
+        rendered,
+        brain_root,
+        dry_run=dry_run,
+        promoted_rendered=_promote_hypothesis_status(rendered),
+        promoted_status=HypothesisStatus.supported.value,
+    )
 
 
 def draft_ingestion(

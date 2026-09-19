@@ -28,7 +28,7 @@ from provenance.models import Claim, ClaimKind
 
 from brainkit.indexer import reindex_tree
 from brainkit.parse import parse_decision_file, parse_hypothesis_file
-from brainkit.validate import validate_tree
+from brainkit.validate import validate_content, validate_tree
 from brainkit.writer import DraftResult, HypothesisDraft, draft_decision, draft_hypotheses, draft_ingestion
 
 from bridge.effects import decided_effects
@@ -328,6 +328,179 @@ class TestValidateBeforeWriting:
         result = draft_decision(tmp_brain, **_decision_kwargs())
         assert result.written is True
         assert "## Quantified effect" not in result.rendered
+
+
+# --------------------------------------------------------------------------- 3b. a draft must be promotable
+
+
+class TestDraftMustBePromotable:
+    """The trap: `missing_reversal` only fires on a `decided` decision, and a draft is
+    always `pending`, so the pending-status validate pass alone can never catch a vague
+    reversal condition — the draft writes, and the human's later one-line status edit is
+    the thing that gets bounced. These tests pin the fix: draft_decision now also runs a
+    second validate pass against a copy of the rendered text with status flipped to
+    `decided`, and refuses the draft (writing nothing) if that pass errors."""
+
+    def test_measured_case_vague_reversal_if_things_change_is_refused_at_draft_time(self, tmp_brain: Path):
+        target = tmp_brain / "decisions" / "2026-03-01-widget-launch.md"
+
+        result = draft_decision(tmp_brain, **_decision_kwargs(reversal="if things change"))
+
+        assert result.written is False
+        assert result.path is None
+        assert not target.exists()
+        codes = _error_codes(result)
+        assert "not_promotable" in codes
+        message = next(f.message for f in result.findings if f.code == "not_promotable")
+        # The finding must read as "this would fail on promotion", not "the pending
+        # file is invalid" -- the pending file is not invalid.
+        assert "promot" in message.lower()
+        assert "missing_reversal" in message
+        # It WAS rendered (validate-before-write always renders first); it just never
+        # reached disk.
+        assert result.rendered != ""
+        assert "pending" in result.rendered  # the file that almost got written is still pending
+
+    @pytest.mark.parametrize("vague", ["TBD", "tbd", "unknown", "Unknown", ""])
+    def test_other_vague_reversal_forms_are_refused_the_same_way(self, tmp_brain: Path, vague: str):
+        target = tmp_brain / "decisions" / "2026-03-01-widget-launch.md"
+
+        result = draft_decision(tmp_brain, **_decision_kwargs(reversal=vague))
+
+        assert result.written is False
+        assert not target.exists()
+        assert "not_promotable" in _error_codes(result)
+        message = next(f.message for f in result.findings if f.code == "not_promotable")
+        assert "missing_reversal" in message
+
+    def test_specific_reversal_drafts_and_then_validates_clean_once_promoted(self, tmp_brain: Path):
+        """The property the whole fix exists to guarantee, end to end: a draft that
+        passes the promotability gate really is promotable -- editing '## Status' by
+        hand from pending to decided produces a file with zero error findings."""
+        result = draft_decision(
+            tmp_brain, **_decision_kwargs(reversal="If fewer than 2 customers use it within 60 days of ship.")
+        )
+        assert result.written is True
+        assert "not_promotable" not in _error_codes(result)
+
+        promoted_text = result.path.read_text(encoding="utf-8").replace(
+            "## Status\npending", "## Status\ndecided", 1
+        )
+        findings = validate_content(promoted_text, path=result.path, brain_root=tmp_brain)
+        assert [f for f in findings if f.severity == "error"] == []
+
+    def test_effect_block_on_pending_draft_is_still_caught_by_the_pending_pass_not_the_promotion_gate(
+        self, tmp_brain: Path
+    ):
+        """Direction 1 of the effect-block contradiction: a `## Quantified effect`
+        block is invalid on a pending draft (effect_on_undecided) and *valid* once
+        promoted to decided -- the two checks disagree about this block. The
+        pending-status pass must keep its veto: it refuses first, unconditionally, so
+        the promotion gate never even gets a chance to call the block clean and there
+        is no way through it."""
+        target = tmp_brain / "decisions" / "2026-03-01-widget-launch.md"
+        result = draft_decision(
+            tmp_brain,
+            **_decision_kwargs(effect={"category": "REV", "year": 2027, "value": 100.0, "unit": "kEUR"}),
+        )
+
+        assert result.written is False
+        assert not target.exists()
+        codes = _error_codes(result)
+        assert "effect_on_undecided" in codes
+        assert "not_promotable" not in codes  # the pending pass refused; promotion pass never ran
+
+    def test_effect_block_would_indeed_be_valid_once_promoted_which_is_why_pending_must_veto_it(
+        self, tmp_brain: Path
+    ):
+        """Direction 2: prove the disagreement is real, by checking the *promoted*
+        shape directly (bypassing the writer). A well-formed REV effect on a decided
+        decision is clean -- this is exactly why draft_decision cannot let a pending
+        draft with an effect block through on the strength of the promotion pass
+        alone; effect_on_undecided on the pending pass is what has to do the work."""
+        decided_text = (
+            "# Decision: Launch the widget\n\n"
+            "## Status\ndecided\n\n"
+            "## Date\n2026-03-01\n\n"
+            "## Context\nCustomers keep asking for a widget.\n\n"
+            "## Options considered\n1. Build it\n2. Don't\n\n"
+            "## Decision\nBuild it\n\n"
+            "## Why\nCustomers asked.\n\n"
+            "## Evidence\n- Three customers asked for it  (chat, no artifact)\n\n"
+            "## Explicitly NOT doing\n\n"
+            "## What would reverse this\n"
+            "If fewer than 2 customers use it within 60 days of ship.\n\n"
+            "## Remaining ambiguities\n\n"
+            "## Quantified effect\n"
+            "- category: REV\n- year: 2027\n- value: 100.0\n- unit: kEUR\n"
+        )
+        target = tmp_brain / "decisions" / "2026-03-01-widget-launch.md"
+        findings = validate_content(decided_text, path=target, brain_root=tmp_brain)
+        assert [f for f in findings if f.severity == "error"] == []
+
+    def test_hypothesis_promotion_to_supported_finds_nothing_new(self, tmp_brain: Path):
+        """Hypotheses get the same mechanism (draft_hypotheses also runs a promoted-
+        status pass, with every rendered '- **Status:** open' flipped to 'supported'),
+        but none of validate_content's checks read a hypothesis's specific status value
+        beyond "is it a valid enum member" -- there is no hypothesis equivalent of
+        missing_reversal. So promotion changes nothing observable for hypotheses: a
+        draft that passes the pending-status ('open') pass also passes the promoted
+        ('supported') pass, and vice versa. Proven directly (bypassing the writer) by
+        running validate_content on the same rendered hypotheses text at both statuses
+        and comparing the error sets."""
+        h = HypothesisDraft(
+            risk="value",
+            belief="belief text",
+            origin="proactive",
+            confidence="low",
+            evidence_for=[("ok", "(chat, no artifact)")],
+        )
+        result = draft_hypotheses(tmp_brain, feature_slug="promotion-parity", title="promotion-parity", hypotheses=[h])
+        assert result.written is True
+        assert "not_promotable" not in _error_codes(result)
+
+        open_text = result.rendered
+        supported_text = open_text.replace("- **Status:** open", "- **Status:** supported")
+        assert open_text != supported_text  # sanity: the substitution actually did something
+
+        open_findings = validate_content(open_text, path=result.path, brain_root=tmp_brain)
+        supported_findings = validate_content(supported_text, path=result.path, brain_root=tmp_brain)
+
+        open_errors = {(f.code, f.message) for f in open_findings if f.severity == "error"}
+        supported_errors = {(f.code, f.message) for f in supported_findings if f.severity == "error"}
+        assert open_errors == set()
+        assert supported_errors == set()
+
+    def test_hypothesis_with_a_defect_is_refused_by_the_pending_pass_before_promotion_is_even_checked(
+        self, tmp_brain: Path
+    ):
+        """A defect validate_content catches regardless of status (placeholder_row --
+        an unfilled template row -- doesn't depend on '**Status:**' at all) is still
+        refused, and refused by the pending ('open') pass, same as before this change:
+        the promotion gate never gets a chance to run, let alone need to. Checked
+        directly with validate_content, on both the open and the would-be-supported
+        text, to show the same error fires either way -- consistent with there being
+        no hypothesis equivalent of missing_reversal."""
+        h = HypothesisDraft(
+            risk="value",
+            belief="belief text",
+            origin="proactive",
+            confidence="low",
+            evidence_for=[("<placeholder claim>", "(chat, no artifact)")],
+        )
+        result = draft_hypotheses(tmp_brain, feature_slug="promotion-defect", title="promotion-defect", hypotheses=[h])
+        assert result.written is False
+        assert "placeholder_row" in _error_codes(result)
+        assert "not_promotable" not in _error_codes(result)  # pending pass refused first; no need to promote-check
+
+        target = tmp_brain / "hypotheses" / "promotion-defect.md"
+        open_text = result.rendered
+        supported_text = open_text.replace("- **Status:** open", "- **Status:** supported")
+        open_codes = {f.code for f in validate_content(open_text, path=target, brain_root=tmp_brain) if f.severity == "error"}
+        supported_codes = {
+            f.code for f in validate_content(supported_text, path=target, brain_root=tmp_brain) if f.severity == "error"
+        }
+        assert open_codes == supported_codes == {"placeholder_row"}
 
 
 # --------------------------------------------------------------------------- 4. status is not the caller's to choose
