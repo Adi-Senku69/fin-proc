@@ -20,6 +20,16 @@ growth of a number that hovers around zero" is not a rate -- it is reported unde
 (``valorization_status`` != ``"ok"``, ``valorization_rate_raw`` is ``None``) and projection
 falls back to a rate of 0.0, with the fallback and its reason recorded in the derivation.
 
+A converged joint fit is additionally checked for *plausibility* (VERIFICATION.md 5.4):
+convergence only means the solver found a local optimum, not that the optimum makes economic
+sense. On the real five-year window the joint estimator converges to a negative variable rate
+for Other costs -- costs falling as revenue rises, which is nonsense, not merely inaccurate.
+``_plausibility_guard`` rejects a converged joint fit (negative or too-high beta, negative
+alpha, an out-of-band v, or any non-finite value) and falls back to the already-computed OLS
+values, exactly as it already falls back when the solver does not converge. The rejection --
+which check failed, the rejected joint values, and the OLS values that replaced them -- is
+recorded on ``FitResult`` and in the derivation rather than hidden.
+
 OTH is regressed *net of depreciation* (OTH - DEPR); :func:`fit_all` subtracts
 the component series and records that in the derivation inputs.
 
@@ -115,6 +125,24 @@ class FitResult:
     joint_converged: bool | None = None
     #: Iterations the joint solver took (``None`` for "ols").
     joint_iterations: int | None = None
+    #: "not_applicable" (method "ols"), "accepted" (method "joint", converged and passed the
+    #: plausibility guard), "not_converged" (method "joint", solver did not converge, fell back
+    #: to OLS), or "rejected" (method "joint", converged but implausible -- VERIFICATION.md 5.4
+    #: -- fell back to OLS).
+    joint_status: str = "not_applicable"
+    #: Which plausibility check failed: "negative_beta" | "beta_ceiling" | "negative_alpha" |
+    #: "valorization_band" | "non_finite". ``None`` unless ``joint_status == "rejected"``.
+    joint_rejection_reason: str | None = None
+    #: The converged-but-implausible (alpha, beta, v) the guard rejected, kept for inspection.
+    #: ``None`` unless ``joint_status == "rejected"``.
+    joint_rejected_alpha: float | None = None
+    joint_rejected_beta: float | None = None
+    joint_rejected_v: float | None = None
+    #: The OLS (alpha, beta) that replaced the rejected joint fit -- equal to this
+    #: ``FitResult``'s own ``.alpha`` / ``.beta`` in that case, recorded explicitly so the trace
+    #: does not have to infer it. ``None`` unless ``joint_status == "rejected"``.
+    joint_fallback_alpha: float | None = None
+    joint_fallback_beta: float | None = None
 
     def fixed_part_at(self, year: int, t0: int | None = None) -> float:
         """alpha valorized to ``year``: alpha * (1+v)^(year - t0), t0 defaults to window_to.
@@ -227,6 +255,58 @@ def _valorization_guard(
     return "ok", None
 
 
+# --------------------------------------------------------------------------- plausibility guard (VERIFICATION 5.4)
+
+
+def _plausibility_guard(
+    alpha: float, beta: float, v: float, *, beta_max: float, v_min: float, v_max: float
+) -> tuple[str, str | None]:
+    """Decide whether a *converged* joint fit is economically plausible.
+
+    Convergence answers "did the solver find a local optimum", not "is the optimum sane": on
+    the real five-year window (VERIFICATION.md 5.4) the joint estimator converges to a negative
+    variable rate for Other costs, which asserts that cost falls as revenue rises -- not a
+    worse estimate, nonsense. Implausible exactly when, checked in this order:
+
+    * alpha, beta or v is not finite, or
+    * beta is negative (a variable rate cannot be negative), or exceeds ``beta_max`` (a cost
+      category consuming more than ``beta_max`` of each unit of revenue is not a variable
+      cost), or
+    * alpha is negative (a negative fixed cost), or
+    * v falls outside ``[v_min, v_max]`` (a fixed part halving, or growing by half or more, in
+      one year is not a rate worth trusting).
+
+    Any one condition is enough. Returns ``(status, reason)`` with ``reason is None`` iff
+    ``status == "ok"``. The caller falls back entirely to the OLS solution when
+    ``status != "ok"``, exactly as it already does when the joint solver fails to converge.
+    """
+    if not all(np.isfinite(x) for x in (alpha, beta, v)):
+        reason = f"joint fit produced a non-finite value: alpha={alpha}, beta={beta}, v={v}"
+        return "non_finite", reason
+    if beta < 0.0:
+        reason = (
+            f"beta={beta:.6f} is negative: a variable rate asserts that cost falls as revenue "
+            "rises, which is not a plausible variable cost"
+        )
+        return "negative_beta", reason
+    if beta > beta_max:
+        reason = (
+            f"beta={beta:.6f} exceeds the ceiling {beta_max:.4f}: a cost category consuming "
+            f"more than {beta_max:.2f}x each unit of revenue is not a variable cost"
+        )
+        return "beta_ceiling", reason
+    if alpha < 0.0:
+        reason = f"alpha={alpha:.6f} is negative: a fixed cost cannot be negative"
+        return "negative_alpha", reason
+    if not (v_min <= v <= v_max):
+        reason = (
+            f"v={v:.6f} is outside the plausible band [{v_min:.4f}, {v_max:.4f}]: a fixed part "
+            "halving or growing by half or more in one year is treated as unfit, not a finding"
+        )
+        return "valorization_band", reason
+    return "ok", None
+
+
 # --------------------------------------------------------------------------- joint estimator (VERIFICATION 5.1)
 
 
@@ -327,6 +407,9 @@ def fit_category(
     degeneracy_share: float | None = None,
     joint_max_iter: int = 200,
     joint_tol: float = 1e-10,
+    joint_beta_max: float | None = None,
+    joint_valorization_min: float | None = None,
+    joint_valorization_max: float | None = None,
 ) -> FitResult:
     """Fit ``Cost_t = alpha + beta * Revenue_t`` for one category over ``window``.
 
@@ -340,13 +423,21 @@ def fit_category(
       growth of the fixed part ``Cost_t - beta*Revenue_t``.
     * ``"joint"`` (VERIFICATION.md 5.1): :func:`fit_joint` fits alpha, v and beta together by
       non-linear least squares, starting from the OLS solution; falls back to OLS if it does
-      not converge.
+      not converge, or if it converges but fails the plausibility guard below.
 
     Either way the resulting valorization rate is guarded (VERIFICATION.md 5.2, see
     :func:`_valorization_guard`): when degenerate, ``FitResult.valorization_rate_raw`` is
     ``None`` and ``.valorization_status`` says why, while ``.valorization_rate`` -- what every
     downstream consumer (projection, the persisted parameter row) actually uses -- falls back
     to 0.0. ``degeneracy_share`` overrides ``nvplan.config.VALORIZATION_DEGENERACY_SHARE``.
+
+    A *converged* joint fit is additionally checked for plausibility (VERIFICATION.md 5.4, see
+    :func:`_plausibility_guard`): a negative or too-large beta, a negative alpha, an
+    out-of-band v, or a non-finite value is rejected and falls back to the OLS solution, with
+    the rejection recorded on ``FitResult.joint_status`` / ``.joint_rejection_reason`` and in
+    the derivation rather than silently persisted. ``joint_beta_max``,
+    ``joint_valorization_min`` and ``joint_valorization_max`` override
+    ``nvplan.config.JOINT_BETA_MAX`` / ``.JOINT_VALORIZATION_MIN`` / ``.JOINT_VALORIZATION_MAX``.
     """
     if code not in wide.columns:
         raise KeyError(f"category {code!r} not in wide frame columns {list(wide.columns)}")
@@ -356,6 +447,9 @@ def fit_category(
     if method not in REGRESSION_METHODS:
         raise ValueError(f"method={method!r} is not valid; expected one of {REGRESSION_METHODS}")
     share = config.VALORIZATION_DEGENERACY_SHARE if degeneracy_share is None else float(degeneracy_share)
+    beta_max = config.JOINT_BETA_MAX if joint_beta_max is None else float(joint_beta_max)
+    v_min = config.JOINT_VALORIZATION_MIN if joint_valorization_min is None else float(joint_valorization_min)
+    v_max = config.JOINT_VALORIZATION_MAX if joint_valorization_max is None else float(joint_valorization_max)
     years = _window_years(wide, window)
 
     rev = wide.loc[years, revenue_code].to_numpy(dtype=float)
@@ -378,6 +472,13 @@ def fit_category(
 
     joint_converged: bool | None = None
     joint_iterations: int | None = None
+    joint_status = "not_applicable"
+    joint_rejection_reason: str | None = None
+    joint_rejected_alpha: float | None = None
+    joint_rejected_beta: float | None = None
+    joint_rejected_v: float | None = None
+    joint_fallback_alpha: float | None = None
+    joint_fallback_beta: float | None = None
     v_raw: float
     if method == "joint":
         t0 = years[-1]
@@ -385,7 +486,13 @@ def fit_category(
         alpha_j, v_j, beta_j, joint_converged, joint_iterations = fit_joint(
             dt, rev, cost, alpha0=alpha, beta0=beta, max_iter=joint_max_iter, tol=joint_tol
         )
-        if joint_converged:
+        plausible_status, plausible_reason = (
+            _plausibility_guard(alpha_j, beta_j, v_j, beta_max=beta_max, v_min=v_min, v_max=v_max)
+            if joint_converged
+            else ("not_converged", None)
+        )
+        if joint_converged and plausible_status == "ok":
+            joint_status = "accepted"
             alpha, beta, v_raw = alpha_j, beta_j, v_j
             model = alpha * np.power(1.0 + v_raw, dt) + beta * rev
             resid = cost - model
@@ -395,8 +502,18 @@ def fit_category(
             r2 = 1.0 if ss_tot == 0.0 else 1.0 - ss_res / ss_tot
             if ss_tot == 0.0:
                 r2 = 1.0 if ss_res == 0.0 else 0.0
+        elif joint_converged:
+            # converged but implausible (VERIFICATION.md 5.4): fall back entirely to the OLS
+            # solution already computed above, and record the rejection honestly rather than
+            # persisting the converged-but-absurd fit or hiding that a joint fit was attempted.
+            joint_status = "rejected"
+            joint_rejection_reason = plausible_reason
+            joint_rejected_alpha, joint_rejected_beta, joint_rejected_v = alpha_j, beta_j, v_j
+            v_raw, _ = _mean_yoy_growth(cost - beta * rev)
+            joint_fallback_alpha, joint_fallback_beta = alpha, beta
         else:
             # not converged: fall back entirely to the OLS solution already computed above
+            joint_status = "not_converged"
             v_raw, _ = _mean_yoy_growth(cost - beta * rev)
     else:
         v_raw, _ = _mean_yoy_growth(cost - beta * rev)
@@ -430,8 +547,13 @@ def fit_category(
             f"Cost_t = alpha*(1+v)^(t-t0) + beta*Revenue_t (joint non-linear least squares, "
             f"window {years[0]}-{years[-1]}, started from OLS)"
         )
-        if not joint_converged:
+        if joint_status == "not_converged":
             formula += "; did not converge, fell back to OLS: Cost_t = alpha + beta*Revenue_t + eps"
+        elif joint_status == "rejected":
+            formula += (
+                f"; converged but rejected by the plausibility guard ({joint_rejection_reason}), "
+                "fell back to OLS: Cost_t = alpha + beta*Revenue_t + eps"
+            )
     else:
         formula = (
             f"Cost_t = alpha + beta * Revenue_t + eps (OLS, window {years[0]}-{years[-1]}); "
@@ -473,6 +595,16 @@ def fit_category(
             "valorization_degeneracy_share": share,
             "joint_converged": joint_converged,
             "joint_iterations": joint_iterations,
+            "joint_status": joint_status,
+            "joint_rejection_reason": joint_rejection_reason,
+            "joint_rejected_alpha": joint_rejected_alpha,
+            "joint_rejected_beta": joint_rejected_beta,
+            "joint_rejected_v": joint_rejected_v,
+            "joint_fallback_alpha": joint_fallback_alpha,
+            "joint_fallback_beta": joint_fallback_beta,
+            "joint_beta_max": beta_max,
+            "joint_valorization_min": v_min,
+            "joint_valorization_max": v_max,
         },
         parents=(),
     )
@@ -495,6 +627,13 @@ def fit_category(
         valorization_fallback_reason=fallback_reason,
         joint_converged=joint_converged,
         joint_iterations=joint_iterations,
+        joint_status=joint_status,
+        joint_rejection_reason=joint_rejection_reason,
+        joint_rejected_alpha=joint_rejected_alpha,
+        joint_rejected_beta=joint_rejected_beta,
+        joint_rejected_v=joint_rejected_v,
+        joint_fallback_alpha=joint_fallback_alpha,
+        joint_fallback_beta=joint_fallback_beta,
     )
 
 

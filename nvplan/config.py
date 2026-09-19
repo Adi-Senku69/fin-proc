@@ -114,6 +114,36 @@ if REGRESSION_METHOD not in REGRESSION_METHODS:
 # (status "degenerate_intercept"). Default 5%, per VERIFICATION.md 5.2.
 VALORIZATION_DEGENERACY_SHARE = _env_float("NVPLAN_VALORIZATION_DEGENERACY_SHARE", 0.05)
 
+# --------------------------------------------------------------------------- joint-fit plausibility guard (5.4)
+#
+# VERIFICATION.md 5.4: on the real five-year window the joint estimator *converges* to answers
+# that are economically impossible (a negative variable rate on Other costs) or merely far off
+# (Personnel's beta). Convergence only says the solver found a local optimum, not that the
+# optimum is sane, so a converged joint fit is additionally checked for plausibility
+# (nvplan.core.regression._plausibility_guard) and falls back to the already-computed OLS
+# values when it fails -- exactly as it already falls back when the solver does not converge.
+#
+#   JOINT_BETA_MAX            - variable-rate ceiling: a joint beta above this (or below 0) is
+#                                rejected. Default 2.0: a cost category consuming more than
+#                                twice each unit of revenue is not a variable cost.
+#   JOINT_VALORIZATION_MIN/MAX - valorization-rate band: a joint v outside [MIN, MAX] is
+#                                rejected. Default [-0.5, 0.5]: a fixed part halving or growing
+#                                by half or more in one year is treated as unfit, not a finding.
+#
+# (a negative alpha, or a non-finite alpha/beta/v, is rejected unconditionally -- no knob.)
+
+JOINT_BETA_MAX = _env_float("NVPLAN_JOINT_BETA_MAX", 2.0, lo=0.0, hi=100.0)
+if JOINT_BETA_MAX <= 0.0:
+    raise ValueError(f"NVPLAN_JOINT_BETA_MAX={JOINT_BETA_MAX!r} must be positive")
+
+JOINT_VALORIZATION_MIN = _env_float("NVPLAN_JOINT_VALORIZATION_MIN", -0.5, lo=-1.0, hi=1.0)
+JOINT_VALORIZATION_MAX = _env_float("NVPLAN_JOINT_VALORIZATION_MAX", 0.5, lo=-1.0, hi=1.0)
+if JOINT_VALORIZATION_MIN >= JOINT_VALORIZATION_MAX:
+    raise ValueError(
+        f"NVPLAN_JOINT_VALORIZATION_MIN={JOINT_VALORIZATION_MIN!r} must be < "
+        f"NVPLAN_JOINT_VALORIZATION_MAX={JOINT_VALORIZATION_MAX!r}"
+    )
+
 
 # --------------------------------------------------------------------------- AI model config
 

@@ -8,6 +8,13 @@ the fallback and its reason on the trace -- and nothing downstream may crash.
 5.1 -- the joint estimator: a selectable ``method="joint"`` that fits alpha, its own growth
 rate and beta together by non-linear least squares, instead of the PDF's constant-intercept
 OLS, which structurally absorbs a genuinely growing fixed part into beta.
+
+5.4 -- the joint fit's plausibility guard: on the real five-year window the joint estimator
+*converges* to a negative variable rate for Other costs, which is not merely a worse estimate
+but an economically impossible one (cost falling as revenue rises). Convergence is not the
+right check; plausibility is. A converged fit that is negative or too large a beta, a negative
+alpha, an out-of-band valorization rate, or non-finite is rejected and falls back to the
+already-computed OLS values, with the rejection recorded rather than hidden.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from nvplan.core.ledger import DerivationLedger, to_wide
 from nvplan.core.projector import project_scenario
 from nvplan.core.regression import (
     FitResult,
+    _plausibility_guard,
     _valorization_guard,
     fit_all,
     fit_category,
@@ -188,11 +196,21 @@ def test_joint_recovers_noise_free_series_within_1pct_ols_does_not():
     assert joint.valorization_rate_raw == pytest.approx(v_true, rel=0.01)
     assert joint.beta == pytest.approx(b_true, rel=0.01)
     assert joint.r_squared == pytest.approx(1.0, abs=1e-9)
+    # VERIFICATION.md 5.4: a *good* joint fit is accepted, not punished by the new plausibility
+    # guard -- it must only reject a converged-but-absurd fit, never a converged-and-correct one.
+    assert joint.joint_status == "accepted"
+    assert joint.joint_rejection_reason is None
+    assert joint.joint_rejected_alpha is None
+    assert joint.joint_rejected_beta is None
+    assert joint.joint_rejected_v is None
+    assert joint.joint_fallback_alpha is None
+    assert joint.joint_fallback_beta is None
 
     d = ledger.get("param:PERS")
     assert d.parameters["method"] == "joint"
     assert d.parameters["joint_converged"] is True
     assert d.parameters["joint_iterations"] == joint.joint_iterations
+    assert d.parameters["joint_status"] == "accepted"
 
     ledger2 = DerivationLedger()
     ols_fit = fit_category(wide, "PERS", (int(years[0]), int(years[-1])), ledger=ledger2, method="ols")
@@ -244,6 +262,203 @@ def test_invalid_method_rejected(wide):
 def test_config_default_method_is_ols():
     assert config.REGRESSION_METHOD == "ols"
     assert config.REGRESSION_METHODS == ("ols", "joint")
+
+
+# --------------------------------------------------------------------------- 5.4: the plausibility guard, unit-level
+
+
+def test_plausibility_guard_ok():
+    status, reason = _plausibility_guard(100.0, 0.3, 0.02, beta_max=2.0, v_min=-0.5, v_max=0.5)
+    assert status == "ok"
+    assert reason is None
+
+
+def test_plausibility_guard_negative_beta_fires_in_isolation():
+    """Alpha and v both plausible; only beta is negative -- the exact real-fixture failure
+    mode for Other costs (VERIFICATION.md 5.4)."""
+    status, reason = _plausibility_guard(2605.58, -0.069, 0.056, beta_max=2.0, v_min=-0.5, v_max=0.5)
+    assert status == "negative_beta"
+    assert reason and "negative" in reason and "beta" in reason
+
+
+def test_plausibility_guard_beta_ceiling_fires_in_isolation():
+    """Alpha and v both plausible, beta positive but above the 2.0 ceiling: a cost category
+    consuming more than twice each unit of revenue is not a variable cost."""
+    status, reason = _plausibility_guard(100.0, 2.5, 0.02, beta_max=2.0, v_min=-0.5, v_max=0.5)
+    assert status == "beta_ceiling"
+    assert reason and "ceiling" in reason
+
+
+def test_plausibility_guard_negative_alpha_fires_in_isolation():
+    """Beta and v both plausible; only alpha (the fixed part) is negative."""
+    status, reason = _plausibility_guard(-50.0, 0.3, 0.02, beta_max=2.0, v_min=-0.5, v_max=0.5)
+    assert status == "negative_alpha"
+    assert reason and "negative" in reason and "alpha" in reason
+
+
+def test_plausibility_guard_valorization_band_fires_in_isolation():
+    """Alpha and beta both plausible; only v is outside the [-0.5, 0.5] band (a fixed part
+    growing 80% in one year is not a rate worth trusting)."""
+    status, reason = _plausibility_guard(100.0, 0.3, 0.8, beta_max=2.0, v_min=-0.5, v_max=0.5)
+    assert status == "valorization_band"
+    assert reason and "band" in reason
+
+    status2, reason2 = _plausibility_guard(100.0, 0.3, -0.8, beta_max=2.0, v_min=-0.5, v_max=0.5)
+    assert status2 == "valorization_band"
+    assert reason2 and "band" in reason2
+
+
+def test_plausibility_guard_non_finite_fires_in_isolation():
+    """A non-finite alpha, beta or v is rejected unconditionally -- no knob controls this."""
+    for alpha, beta, v in [
+        (float("nan"), 0.3, 0.02),
+        (100.0, float("inf"), 0.02),
+        (100.0, 0.3, float("nan")),
+    ]:
+        status, reason = _plausibility_guard(alpha, beta, v, beta_max=2.0, v_min=-0.5, v_max=0.5)
+        assert status == "non_finite"
+        assert reason and "non-finite" in reason
+
+
+def test_plausibility_guard_ceiling_and_band_are_configurable():
+    # beta=1.5 exceeds a tightened ceiling of 1.0 but not the default 2.0.
+    assert _plausibility_guard(100.0, 1.5, 0.02, beta_max=2.0, v_min=-0.5, v_max=0.5)[0] == "ok"
+    assert _plausibility_guard(100.0, 1.5, 0.02, beta_max=1.0, v_min=-0.5, v_max=0.5)[0] == "beta_ceiling"
+    # v=0.3 is inside the default band but outside a tightened [-0.1, 0.1] one.
+    assert _plausibility_guard(100.0, 0.3, 0.3, beta_max=2.0, v_min=-0.5, v_max=0.5)[0] == "ok"
+    assert _plausibility_guard(100.0, 0.3, 0.3, beta_max=2.0, v_min=-0.1, v_max=0.1)[0] == "valorization_band"
+
+
+def test_config_defaults_for_plausibility_guard():
+    assert config.JOINT_BETA_MAX == 2.0
+    assert config.JOINT_VALORIZATION_MIN == -0.5
+    assert config.JOINT_VALORIZATION_MAX == 0.5
+
+
+# --------------------------------------------------------------------------- 5.4: the real fixture, measured
+
+
+def test_joint_other_costs_negative_beta_is_rejected_and_falls_back_to_ols(wide):
+    """Measured in VERIFICATION.md 5.4: on the real 2021-2025 window the joint estimator
+    converges (it does not fail to converge) to beta=-0.069 for Other costs net of
+    depreciation -- a variable rate asserting cost falls as revenue rises. That is nonsense,
+    not merely a worse estimate, so the plausibility guard must reject it and fall back to the
+    OLS beta (~0.0445), while preserving the rejected joint value for inspection."""
+    ledger = DerivationLedger()
+    ledger_ols = DerivationLedger()
+    joint = fit_category(
+        wide, "OTH", (2021, 2025), ledger=ledger, method="joint",
+        subtract=wide["DEPR"], subtract_code="DEPR",
+    )
+    ols_fit = fit_category(
+        wide, "OTH", (2021, 2025), ledger=ledger_ols, method="ols",
+        subtract=wide["DEPR"], subtract_code="DEPR",
+    )
+
+    assert joint.joint_converged is True  # it *did* converge -- this is not the old fallback path
+    assert joint.joint_status == "rejected"
+    assert joint.joint_rejection_reason is not None
+    assert "negative" in joint.joint_rejection_reason and "beta" in joint.joint_rejection_reason
+
+    # The rejected joint beta really is the measured -0.069, preserved for inspection.
+    assert joint.joint_rejected_beta == pytest.approx(-0.06908700449243133, rel=1e-6)
+    assert joint.joint_rejected_beta < 0.0
+
+    # The fit falls back entirely to the OLS values.
+    assert joint.alpha == pytest.approx(ols_fit.alpha)
+    assert joint.beta == pytest.approx(ols_fit.beta)
+    assert joint.beta == pytest.approx(0.0445, abs=5e-4)
+    assert joint.joint_fallback_alpha == pytest.approx(ols_fit.alpha)
+    assert joint.joint_fallback_beta == pytest.approx(ols_fit.beta)
+
+    # Recorded in the derivation, not hidden.
+    d = ledger.get("param:OTH")
+    assert d.parameters["joint_status"] == "rejected"
+    assert d.parameters["joint_rejected_beta"] == pytest.approx(joint.joint_rejected_beta)
+    assert d.parameters["joint_fallback_beta"] == pytest.approx(joint.beta)
+    assert "rejected" in d.formula_text and "plausibility guard" in d.formula_text
+
+
+def test_joint_personnel_beta_0_611_is_merely_inaccurate_not_rejected(wide):
+    """Measured in VERIFICATION.md 5.4: on the same real window the joint estimator converges
+    for Personnel to alpha~1283.65, beta~0.611, v~-0.085 -- all individually plausible (positive
+    alpha, beta within (0, 2.0], v within [-0.5, 0.5]). 0.611 is a long way from the generating
+    0.300, but a *bad* estimate is not the same thing as an *implausible* one, and the guard
+    exists only to catch the latter (VERIFICATION.md 5.4 explicitly distinguishes "worse" from
+    "nonsense"). So this fit is NOT rejected: it passes the guard and is used as-is. This is the
+    honest outcome, not a forced one -- if a future change to the guard's bands caught this
+    fit too, this test should be updated to say so, not silently made to pass."""
+    ledger = DerivationLedger()
+    joint = fit_category(wide, "PERS", (2021, 2025), ledger=ledger, method="joint")
+
+    assert joint.joint_converged is True
+    assert joint.joint_status == "accepted"
+    assert joint.joint_rejection_reason is None
+    assert joint.joint_rejected_alpha is None
+    assert joint.joint_rejected_beta is None
+    assert joint.joint_rejected_v is None
+
+    assert joint.alpha == pytest.approx(1283.6526055088475, rel=1e-6)
+    assert joint.beta == pytest.approx(0.6106073297053325, rel=1e-6)
+    assert joint.valorization_rate == pytest.approx(-0.08546792486626885, rel=1e-6)
+
+    d = ledger.get("param:PERS")
+    assert d.parameters["joint_status"] == "accepted"
+
+
+# --------------------------------------------------------------------------- 5.4: defaults / integration
+
+
+def test_ols_never_consults_plausibility_guard(wide):
+    """The OLS path must not be touched by this guard at all: joint_status stays
+    "not_applicable" and every joint_* rejection/fallback field stays None, for every category,
+    method omitted or explicit "ols"."""
+    ledger = DerivationLedger()
+    for code, kwargs in (
+        ("MAT", {}), ("EXT", {}),
+        ("PERS", {}),
+        ("OTH", {"subtract": wide["DEPR"], "subtract_code": "DEPR"}),
+    ):
+        f_default = fit_category(wide, code, (2021, 2025), ledger=DerivationLedger(), **kwargs)
+        f_explicit = fit_category(wide, code, (2021, 2025), ledger=DerivationLedger(), method="ols", **kwargs)
+        for f in (f_default, f_explicit):
+            assert f.joint_status == "not_applicable"
+            assert f.joint_rejection_reason is None
+            assert f.joint_rejected_alpha is None
+            assert f.joint_rejected_beta is None
+            assert f.joint_rejected_v is None
+            assert f.joint_fallback_alpha is None
+            assert f.joint_fallback_beta is None
+        # byte-identical: the default path and the explicit "ols" path are the same code path.
+        assert f_default.alpha == f_explicit.alpha
+        assert f_default.beta == f_explicit.beta
+
+
+def test_joint_beta_max_and_valorization_band_overridable_per_call(wide):
+    """``joint_beta_max`` / ``joint_valorization_min`` / ``joint_valorization_max`` override
+    ``nvplan.config`` the same way ``degeneracy_share`` already does (mirrors
+    test_degeneracy_share_is_configurable): Personnel's joint fit (beta~0.611, v~-0.085) passes
+    under the defaults but is rejected once the ceiling / band is tightened below its values."""
+    ledger = DerivationLedger()
+    default = fit_category(wide, "PERS", (2021, 2025), ledger=ledger, method="joint")
+    assert default.joint_status == "accepted"
+
+    ledger2 = DerivationLedger()
+    tight_beta = fit_category(
+        wide, "PERS", (2021, 2025), ledger=ledger2, method="joint", joint_beta_max=0.5
+    )
+    assert tight_beta.joint_status == "rejected"
+    assert tight_beta.joint_rejection_reason is not None
+    assert "ceiling" in tight_beta.joint_rejection_reason
+
+    ledger3 = DerivationLedger()
+    tight_band = fit_category(
+        wide, "PERS", (2021, 2025), ledger=ledger3, method="joint",
+        joint_valorization_min=0.0, joint_valorization_max=0.5,
+    )
+    assert tight_band.joint_status == "rejected"
+    assert tight_band.joint_rejection_reason is not None
+    assert "band" in tight_band.joint_rejection_reason
 
 
 # --------------------------------------------------------------------------- threading: fit_all / run_plan
