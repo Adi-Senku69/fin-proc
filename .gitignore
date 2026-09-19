@@ -19,3 +19,8 @@ dist/
 *.db-journal
 *.sqlite
 *.sqlite3
+
+# secrets - never commit
+.env
+.env.*
+!.env.example
