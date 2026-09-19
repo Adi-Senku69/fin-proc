@@ -10,9 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from nvplan.config import CATEGORY_CODES, PLAN_YEARS
+
 from provenance import ClaimKind, TagKind, parse_decision_status, parse_hypothesis_status, parse_row, parse_tags, resolve_path, strip_code_spans
 
-from brainkit.parse import ParsedFile, parse_brain_file, parse_decision_file, parse_hypothesis_file, sniff_record_shape
+from brainkit.parse import ParsedFile, QuantifiedEffectBlock, parse_brain_file, parse_decision_file, parse_hypothesis_file, sniff_record_shape
 
 Severity = Literal["error", "warning"]
 
@@ -46,6 +48,51 @@ _SHAPE_TARGET_DIR = {
     ClaimKind.decision: "decisions/",
     ClaimKind.hypothesis: "hypotheses/",
 }
+
+# PLATFORM.md §7.1: only REV currently drives the plan; a valid effect on any other
+# category parses and indexes but drives nothing in P2 (effect_not_wired, a warning).
+WIRED_EFFECT_CATEGORY = "REV"
+EFFECT_REQUIRED_KEYS = ("category", "year", "value", "unit")
+EFFECT_UNIT = "kEUR"
+
+
+def _effect_problems(effect: QuantifiedEffectBlock) -> list[str]:
+    """Every ``bad_effect`` reason for one parsed block (PLATFORM.md §7.1): unknown
+    category code, year outside ``nvplan.config.PLAN_YEARS``, non-numeric or
+    non-positive value, unit other than ``kEUR``, or a missing required key. Checked
+    independently of decision status - a malformed block is malformed whether or not
+    it is also on a decision that isn't ``decided`` (``effect_on_undecided`` is a
+    separate finding)."""
+    problems: list[str] = []
+    missing = [k for k in EFFECT_REQUIRED_KEYS if not str(effect.raw.get(k, "")).strip()]
+    if missing:
+        problems.append(f"quantified effect missing required key(s): {', '.join(missing)}")
+
+    if effect.category.strip():
+        if effect.category.strip().upper() not in CATEGORY_CODES:
+            problems.append(
+                f"quantified effect has an unknown category code {effect.category!r}; "
+                f"expected one of {CATEGORY_CODES}"
+            )
+
+    raw_year = effect.raw.get("year", "").strip()
+    if raw_year:
+        if effect.year is None:
+            problems.append(f"quantified effect year is not a valid integer: {raw_year!r}")
+        elif not (PLAN_YEARS[0] <= effect.year <= PLAN_YEARS[1]):
+            problems.append(f"quantified effect year {effect.year} is outside the plan horizon {PLAN_YEARS}")
+
+    raw_value = effect.raw.get("value", "").strip()
+    if raw_value:
+        if effect.value is None:
+            problems.append(f"quantified effect value is not numeric: {raw_value!r}")
+        elif effect.value <= 0:
+            problems.append(f"quantified effect value must be a positive number, got {effect.value}")
+
+    if effect.unit.strip() and effect.unit.strip() != EFFECT_UNIT:
+        problems.append(f"quantified effect unit must be {EFFECT_UNIT!r}, got {effect.unit!r}")
+
+    return problems
 
 
 @dataclass(frozen=True)
@@ -192,6 +239,24 @@ def validate_file(path: str | Path, *, brain_root: str | Path) -> list[Finding]:
                 parse_hypothesis_status(value.strip())
             except ValueError as exc:
                 add("bad_status", f"hypothesis status invalid: {exc}")
+
+    # --- effect_on_undecided / bad_effect / effect_not_wired (PLATFORM.md §7.1): the
+    # optional "## Quantified effect" block, decisions only.
+    if is_decision and parsed.effect is not None:
+        effect = parsed.effect
+        status_decided = (parsed.status or "").strip().lower() == "decided"
+        if not status_decided:
+            add("effect_on_undecided", "quantified effect block is present but decision status is not 'decided'")
+        problems = _effect_problems(effect)
+        for msg in problems:
+            add("bad_effect", msg)
+        if status_decided and not problems and effect.category.strip().upper() != WIRED_EFFECT_CATEGORY:
+            add(
+                "effect_not_wired",
+                f"quantified effect category {effect.category!r} parses and indexes but only "
+                f"{WIRED_EFFECT_CATEGORY!r} currently drives the plan (P2)",
+                severity="warning",
+            )
 
     # --- missing_reversal: a decided decision names a real, checkable condition.
     if is_decision and (parsed.status or "").strip().lower() == "decided":

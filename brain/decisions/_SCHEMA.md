@@ -41,7 +41,41 @@ YYYY-MM-DD
 
 ## Remaining ambiguities
 <!-- What we still don't know. Never evidence. -->
+
+## Quantified effect
+<!-- Optional. Valid only when ## Status is `decided`. -->
+- category: <REV|MAT|EXT|PERS|OTH>
+- year: <YYYY>
+- value: <number>
+- unit: kEUR
 ```
+
+### Quantified effect (PLATFORM.md §7.1) — optional, decision-drives-money direction
+
+A `decided` decision may carry one `## Quantified effect` block, a four-bullet
+`key: value` list:
+
+- `category` — one of the five planning category codes (`REV`, `MAT`, `EXT`, `PERS`,
+  `OTH`; `nvplan.config.CATEGORY_CODES`).
+- `year` — an integer inside the plan horizon (`nvplan.config.PLAN_YEARS`).
+- `value` — a positive number.
+- `unit` — must be `kEUR`, nothing else.
+
+Rules:
+
+1. **Decided only.** The block is valid only on a `decided` decision. Present on a
+   `pending` or `superseded` decision, it is an `effect_on_undecided` error and the
+   file is rejected under strict ingest, exactly like any other error-level finding.
+2. **Structurally sound or rejected.** An unknown category code, a year outside the
+   plan horizon, a non-numeric or non-positive value, a unit other than `kEUR`, or a
+   missing key is a `bad_effect` error — the file is rejected the same way.
+3. **Only `REV` currently drives the plan.** A structurally valid effect on any
+   category other than `REV` parses and indexes (`Claim.effect_json`) but drives
+   nothing downstream in Phase P2 — that fires `effect_not_wired`, a warning, not an
+   error, so the file still ingests.
+4. A decided decision's `REV` effect becomes the revenue override the planning run
+   accepts (`bridge.effects.revenue_override`); every plan value it touches then
+   traces back to this decision, its evidence, and the person who confirmed it.
 
 ## The hard rules (PLATFORM.md §4.2, §4.4)
 

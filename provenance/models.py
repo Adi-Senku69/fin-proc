@@ -24,6 +24,12 @@ nvplan derivation) may not exist yet, and a real FK would make ingest order-depe
 P2 bridge (PLATFORM.md §7) is what resolves and validates these references at ingest time,
 not a DB constraint. ``ClaimLink.from_claim_id``/``to_claim_id`` DO get a real ForeignKey:
 both ends are always local ``claim`` rows created in the same index.
+
+``Claim.effect_json`` (PLATFORM.md §7.1, P2 bridge) is the indexed form of a decision's
+optional ``## Quantified effect`` markdown block (``{"category", "year", "value",
+"unit"}``), null for every claim that carries no such block. It is a read-optimized cache
+only: the markdown file remains the source of truth, and this column is rebuilt from it on
+every re-ingest exactly like every other indexed field.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ from datetime import date as date_, datetime, timezone
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -107,6 +114,9 @@ class Claim(Base):
     derivation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ai_record_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    # Indexed form of a decision's optional "## Quantified effect" block - see module
+    # docstring. Null for every claim that carries no such block.
+    effect_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     evidence: Mapped[list[Evidence]] = relationship(back_populates="claim", foreign_keys="Evidence.claim_id")
 

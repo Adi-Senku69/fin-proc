@@ -44,6 +44,23 @@ class ParsedSection:
 
 
 @dataclass(frozen=True)
+class QuantifiedEffectBlock:
+    """The parsed ``## Quantified effect`` block (PLATFORM.md §7.1), before validation.
+
+    ``category``/``unit`` are kept exactly as written (stripped, not case-normalized);
+    ``year``/``value`` are ``None`` when the key is missing or its value doesn't parse as
+    the expected type - a malformed value never raises here, it lands in ``raw`` verbatim
+    and ``brainkit.validate`` reports it as a precise ``bad_effect`` finding.
+    """
+
+    category: str
+    year: int | None
+    value: float | None
+    unit: str
+    raw: dict[str, str]
+
+
+@dataclass(frozen=True)
 class ParsedFile:
     path: Path
     kind: ClaimKind | None
@@ -54,6 +71,9 @@ class ParsedFile:
     evidence_rows: dict[str, tuple[str, ...]] = field(default_factory=dict)
     body_sha256: str = ""
     errors: tuple[str, ...] = field(default_factory=tuple)
+    # Decisions only (PLATFORM.md §7.1); None when the file carries no
+    # "## Quantified effect" block, or is not a decision file at all.
+    effect: QuantifiedEffectBlock | None = None
 
 
 def _read(path: Path) -> tuple[str, str]:
@@ -203,6 +223,44 @@ def _meta_fields(sections: tuple[ParsedSection, ...]) -> dict[str, str]:
     return out
 
 
+def _parse_effect_block(sections: tuple[ParsedSection, ...]) -> QuantifiedEffectBlock | None:
+    """Parse the optional ``## Quantified effect`` block (PLATFORM.md §7.1): a four-bullet
+    ``key: value`` list (``category``, ``year``, ``value``, ``unit``). Tolerant of key
+    whitespace/case (``_META_FIELD_RE`` strips bold markers too, matching ``_meta_fields``).
+    Returns ``None`` when the heading is absent. A malformed ``year``/``value`` never
+    raises: it is recorded in ``raw`` as-is and typed as ``None``."""
+    body = _section_body(sections, "Quantified effect")
+    if body is None:
+        return None
+
+    raw: dict[str, str] = {}
+    for line in body.splitlines():
+        bm = _BULLET_RE.match(line)
+        candidate = bm.group(1).strip() if bm else line.strip()
+        if not candidate:
+            continue
+        fm = _META_FIELD_RE.match(candidate)
+        if fm:
+            raw[fm.group(1).strip().lower()] = fm.group(2).strip()
+
+    category = raw.get("category", "").strip()
+    unit = raw.get("unit", "").strip()
+
+    year: int | None
+    try:
+        year = int(raw["year"].strip()) if "year" in raw and raw["year"].strip() else None
+    except ValueError:
+        year = None
+
+    value: float | None
+    try:
+        value = float(raw["value"].strip()) if "value" in raw and raw["value"].strip() else None
+    except ValueError:
+        value = None
+
+    return QuantifiedEffectBlock(category=category, year=year, value=value, unit=unit, raw=raw)
+
+
 def parse_decision_file(path: str | Path) -> ParsedFile:
     path = Path(path)
     text, sha = _read(path)
@@ -210,6 +268,7 @@ def parse_decision_file(path: str | Path) -> ParsedFile:
 
     status = _first_nonempty_line(_section_body(sections, "Status"))
     date = _first_nonempty_line(_section_body(sections, "Date"))
+    effect = _parse_effect_block(sections)
 
     evidence_rows: dict[str, tuple[str, ...]] = {}
     for sec in sections:
@@ -228,6 +287,7 @@ def parse_decision_file(path: str | Path) -> ParsedFile:
         evidence_rows=evidence_rows,
         body_sha256=sha,
         errors=errors,
+        effect=effect,
     )
 
 

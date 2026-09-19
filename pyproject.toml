@@ -28,6 +28,7 @@ nvplan-gen-data = "nvplan.data.generate:main"
 nvplan-demo = "nvplan.api.demo:main"
 nvplan-serve = "nvplan.api.app:serve"
 nvplan-ai-check = "nvplan.ai.check:main"
+nvplan-bridge-check = "bridge.check:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

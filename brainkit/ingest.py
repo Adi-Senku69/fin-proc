@@ -32,7 +32,7 @@ from provenance import (
 )
 
 from brainkit.parse import ParsedFile, parse_brain_file
-from brainkit.validate import Finding, _is_placeholder_row, validate_file
+from brainkit.validate import Finding, _effect_problems, _is_placeholder_row, validate_file
 
 # Collections that actually become Claim rows. `source/` is raw material and is never
 # rewritten or ingested; `_examples/` is fixture space; `_SCHEMA.md` is a template.
@@ -233,12 +233,24 @@ def ingest_tree(
             continue
 
         claim_date = _parse_date_or_none(parsed.date)
+        # Quantified effect (PLATFORM.md §7.1): indexed only when the parsed block is
+        # well-formed. A file carrying a malformed effect never reaches here under
+        # strict=True (validate_file already flagged it error-level and it was
+        # rejected above); under strict=False this stays defensive and simply
+        # indexes nothing rather than a half-parsed value.
+        effect_json = None
+        is_decided = (parsed.status or "").strip().lower() == "decided"
+        if parsed.effect is not None and is_decided and not _effect_problems(parsed.effect):
+            e = parsed.effect
+            effect_json = {"category": e.category.strip(), "year": e.year, "value": e.value, "unit": e.unit.strip()}
+
         if existing is not None:
             claim = existing
             claim.title = parsed.title or path.stem
             claim.status = parsed.status
             claim.date = claim_date
             claim.body_sha256 = parsed.body_sha256
+            claim.effect_json = effect_json
         else:
             claim = Claim(
                 kind=_claim_kind_for(parsed, path),
@@ -248,6 +260,7 @@ def ingest_tree(
                 status=parsed.status,
                 date=claim_date,
                 body_sha256=parsed.body_sha256,
+                effect_json=effect_json,
             )
             session.add(claim)
             session.flush()
