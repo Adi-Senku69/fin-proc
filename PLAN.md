@@ -3,6 +3,10 @@
 Source of truth: `AI-Supported Planning — PoC Architecture & 3-Week Implementation Plan.pdf`
 (PerfektWerk for Newvision Software GmbH, September 2026).
 
+> **Scope note, 2026-09-19.** This document governs the **finance module** only. As of today that
+> module is the quantification layer of a wider product-management platform whose architecture
+> contract is `PLATFORM.md`. Nothing below changes; the module keeps its own plan, tests and gates.
+
 ## 1. What the PDF asks for (condensed)
 
 A planning engine for **five P&L categories** at total-company level where **every number is
