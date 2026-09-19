@@ -15,17 +15,17 @@ prose instead of a citation (part 2). Verification runs entirely offline (no mod
 *before* anything is persisted - exactly the discipline ``run_deviation_explanation`` already
 applies to ``ExplanationRejected``.
 
-Touchpoint reuse
------------------
-Adding an ``assistant`` member to ``nvplan.db.models.Touchpoint`` is a migration outside this
-module's file ownership. This reuses ``Touchpoint.deviation_explanation`` for the assistant's
-own record (see :data:`ASSISTANT_TOUCHPOINT`) - the closest existing member in spirit, since
-that touchpoint's whole job is already "cite figures against a deterministic table or be
-rejected" (``figures.check_explanation``), and unlike ``revenue_proposal`` it carries no
-``proposed_value`` semantics of its own. The distinction is recorded in the record's
-``rationale``, prefixed ``"[assistant] "`` (see :func:`ask`); a record's own touchpoint-specific
-proposal (via ``record_revenue_proposal``, reused unmodified) still lands as its own
-``ai_record`` with ``touchpoint=revenue_proposal``, exactly as the standalone touchpoint does.
+Touchpoint
+----------
+``nvplan.db.models.Touchpoint`` carries its own ``assistant`` member for exactly this module's
+own record (see :data:`ASSISTANT_TOUCHPOINT`); it is additive (the column is ``Enum(Touchpoint)``,
+stored by member *name*, so existing rows under the three formal touchpoints are unaffected -
+see ``tests/test_assistant.py``). The record's ``rationale`` is the question itself, verbatim, no
+longer a ``"[assistant] "``-prefixed reuse of ``deviation_explanation``'s rationale - a prefix in
+free text was not a real category and made the two indistinguishable to any query. A record's own
+touchpoint-specific proposal (via ``record_revenue_proposal``, reused unmodified) still lands as
+its own ``ai_record`` with ``touchpoint=revenue_proposal``, exactly as the standalone touchpoint
+does.
 
 Agent construction reuses ``nvplan.ai.agents``' private helpers (``_invoke``, ``PromptCapture``,
 ``_prompt_text``/``_system_as_sent``/``_response_text``, ``_discard_partial_writes``,
@@ -65,9 +65,8 @@ __all__ = [
     "verify_answer",
 ]
 
-# The closest existing Touchpoint member for the assistant's own ai_record - see module doc.
-ASSISTANT_TOUCHPOINT = Touchpoint.deviation_explanation
-RATIONALE_PREFIX = "[assistant] "
+# The assistant's own ai_record touchpoint - see module doc.
+ASSISTANT_TOUCHPOINT = Touchpoint.assistant
 
 ASSISTANT_READ_TOOLS: frozenset[str] = frozenset(
     {
@@ -230,26 +229,111 @@ _YEAR_ALLOWED: frozenset[int] = frozenset(
 # A count small enough to be an ordinal used in prose ("3 scenarios"), never a figure.
 _SMALL_COUNT_MAX = 20
 
-# Runs of identifier-ish characters: a run that mixes letters and digits (a decision slug like
-# "2026-09-20-sunset-legacy-import", or a code like "param:PERS" once it contains a digit) is
-# never a number, however many digits it carries, and is masked out before the numeric scan.
+# Runs of identifier-ish characters that MIGHT be one of the explicit shapes below - never a
+# generic "mixes a letter and a digit" heuristic. That heuristic used to mask ANY such run,
+# which is how scientific notation ("1e5") and a fused unit ("22900kEUR") escaped: both mix a
+# letter and a digit but are not identifiers at all. Each run found here is masked only when it
+# matches one of the named shapes; everything else - including those two - falls through to the
+# numeric scan below.
 _IDENTIFIER_RUN_RE = re.compile(r"[A-Za-z0-9_./:\-]+")
 
-# Any number-like token left after masking: an optional sign, a digit run (optionally grouped by
-# spaces/commas/nbsp), an optional decimal part, an optional percent sign. Deliberately permissive
-# (over-matching a malformed number into two flagged pieces is safe; under-matching a real figure
-# is not) - see the module tests for the cases this must get right.
+# Shape 1: a token with a colon - a parameter code ("param:PERS") or a ledger key
+# ("plan:base:REV:2027", "actual:REV:2025", "depr:2028" - see nvplan.core.ledger). Every ledger
+# key's numeric segment is either a 4-digit year or a short 1-2 digit index, never an arbitrary
+# figure, so a colon-separated segment that is ALL digits and isn't one of those lengths breaks
+# the shape - closing an evasion this rule would otherwise open ("revenue:22900"). A digit
+# segment that merely happens to be 4 digits (see the module doc) is a smaller residual.
+_COLON_SHAPE = re.compile(r":")
+
+
+def _is_colon_shape(run: str) -> bool:
+    if not _COLON_SHAPE.search(run):
+        return False
+    return all(not p.isdigit() or len(p) in (1, 2, 4) for p in run.split(":"))
+
+
+# Shape 2: an ISO date (a decision's own `date`, not a figure). Month/day are range-checked so a
+# fabricated, syntactically-ISO-shaped token can't be waved through on shape alone - though the
+# year slot itself is not range-checked (a decision may predate the plan horizon); see the
+# module doc for the residual this leaves open.
+_ISO_DATE_SHAPE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+
+
+def _is_iso_date_shape(run: str) -> bool:
+    m = _ISO_DATE_SHAPE.match(run)
+    if not m:
+        return False
+    month, day = int(m.group(2)), int(m.group(3))
+    return 1 <= month <= 12 and 1 <= day <= 31
+
+
+# Shape 3: a slug of 3+ hyphen-separated parts, at least one of them alphabetic - a decision
+# slug ("2026-09-20-sunset-legacy-import"), never a number even though several parts are digits.
+# Any ALL-digit part must be 2 or 4 digits (a date component), exactly as a real decision slug's
+# date prefix is - not an arbitrary length, which is how a fabricated 3-part slug could otherwise
+# smuggle a real figure past this rule ("22900-legacy-import"; see the module doc).
+def _is_slug_shape(run: str) -> bool:
+    parts = run.split("-")
+    if len(parts) < 3 or not all(parts):
+        return False
+    if not any(p.isalpha() for p in parts):
+        return False
+    return all(not p.isdigit() or len(p) in (2, 4) for p in parts)
+
+
+# Shape 4: a label that reads alphabetic-then-ordinal-digit, one or more dot-joined segments
+# ("Q1", "D2.P4" from the scan framework). Each segment's digit run is capped at two digits -
+# the framework's own labels never need more (D1-D6, P1-P9, Q1-Q4) - specifically so a fused
+# figure dressed up as a label ("q1500") can't hide behind an unbounded digit run; see the
+# module doc for the narrower residual this still leaves ("q15").
+_LABEL_SHAPE = re.compile(r"^[A-Za-z]{1,4}\d{1,2}(?:\.[A-Za-z]{1,4}\d{1,2})*$")
+
+# Shape 5: a number hyphen-fused to a single word as a compound modifier ("54-position", as in
+# "the 54-position framework") - grammatically a name for a fixed thing, not an assertion of a
+# quantity. Contrast a fused *unit* with no hyphen ("22900kEUR"), which IS a figure (see
+# _NUMERIC_RE below) - the hyphen, not the size of the number, is what marks this as a label. The
+# digit run is capped at 3 digits (comfortably above "54", the spec's own example) so this can't
+# become an unbounded smuggling route on its own; a number under 1000 fused this way
+# ("500-widgets") is a smaller, documented residual (see the module doc) rather than an open one.
+_HYPHEN_LABEL_SHAPE = re.compile(r"^\d{1,3}-[A-Za-z]+$")
+
+
+def _is_identifier_shape(run: str) -> bool:
+    if _is_colon_shape(run):
+        return True
+    if _is_iso_date_shape(run):
+        return True
+    if _HYPHEN_LABEL_SHAPE.match(run):
+        return True
+    if _LABEL_SHAPE.match(run):
+        return True
+    return _is_slug_shape(run)
+
+
+# Any number-like token left after masking: an optional sign; a digit run (optionally grouped by
+# spaces/commas/nbsp) with an optional decimal part, OR a decimal with no leading integer part
+# ("`.488`"); an optional scientific-notation exponent ("`1e5`", "`1E-5`"); an optional percent
+# sign; and - unlike the old trailing boundary, which refused to match right up against a
+# following letter and thereby hid a fused unit - an optional run of fused letters, so a figure
+# glued to a unit ("`22900kEUR`") is caught as one offending token instead of silently skipped.
+# Deliberately permissive (over-matching a malformed number into two flagged pieces is safe;
+# under-matching a real figure is not) - see the module tests for the cases this must get right,
+# and its doc for the fused-*prefix* direction ("kEUR22900") this does not cover.
 _NUMERIC_RE = re.compile(
-    r"(?<![\w.])[+\-−–]?\d+(?:[ ,  ]\d{3})*(?:\.\d+)?%?(?![\w])"
+    r"(?<![\w.])"
+    r"[+\-−–]?"
+    r"(?:\d+(?:[ ,\u00a0]\d{3})*(?:\.\d+)?|\.\d+)"
+    r"(?:[eE][+\-]?\d+)?"
+    r"%?"
+    r"[A-Za-z]*"
+    r"(?![\w])"
 )
 
 
 def _mask_identifiers(text: str) -> str:
     def repl(m: re.Match[str]) -> str:
         s = m.group(0)
-        if any(c.isalpha() for c in s) and any(c.isdigit() for c in s):
-            return " " * len(s)  # a word/identifier, e.g. "param:PERS", a decision slug - never a number
-        return s
+        return " " * len(s) if _is_identifier_shape(s) else s
 
     return _IDENTIFIER_RUN_RE.sub(repl, text)
 
@@ -408,7 +492,7 @@ def ask(
             touchpoint=ASSISTANT_TOUCHPOINT,
             prompt_text=agents._prompt_text(agents._system_as_sent(capture, prompts.ASSISTANT_ASK_SYSTEM), user_prompt),
             response_text=agents._response_text(result["messages"], draft),
-            rationale=RATIONALE_PREFIX + question.strip()[:500],
+            rationale=question.strip()[:500],
             model_version=ctx.model_version,
             status=AiStatus.proposed,
             call_log_json=list(ctx.call_log),

@@ -83,6 +83,10 @@ class Touchpoint(enum.Enum):
     env_scan = "env_scan"
     revenue_proposal = "revenue_proposal"
     deviation_explanation = "deviation_explanation"
+    # The conversational assistant's own ai_record (nvplan.ai.assistant.ask), distinct from the
+    # three touchpoints above. Additive: the column is `Enum(Touchpoint)`, stored by member NAME,
+    # so adding this member does not change how any existing row reads back.
+    assistant = "assistant"
 
 
 class AiStatus(enum.Enum):

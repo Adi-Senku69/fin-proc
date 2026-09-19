@@ -63,36 +63,163 @@ def _records(factory) -> list[AiRecord]:
 
 
 # --------------------------------------------------------------------------- the backstop scan (pure function)
+#
+# One parametrized table for the whole contract: every shape the scan must reject, every shape
+# it must let through, and (grouped at the end) the three escapes this fix closes. See
+# nvplan.ai.assistant's shape comments (_is_identifier_shape and friends) for the reasoning
+# behind each masked shape, and the module's "try to break it" residuals below the table.
+LOOSE_FIGURES_CASES: list[tuple[str, list[str]]] = [
+    # -- must still reject (money, percentages, negatives, bare numbers, out-of-range years,
+    #    the German decimal form) --------------------------------------------------------------
+    ("Costs came in around €1,245.7 k this year.", ["1,245.7"]),
+    ("Margin improved by 12.5% year over year.", ["12.5%"]),
+    ("A plain 500 k EUR swing.", ["500"]),
+    ("A negative -245.7 swing.", ["-245.7"]),
+    ("A negative −245.7 swing.", ["−245.7"]),  # unicode minus (U+2212), not ASCII hyphen
+    ("500 categories would not be a count.", ["500"]),
+    ("A year outside both windows, 2031, is not free.", ["2031"]),
+    # German formatting (dot as thousands, comma as decimal): "5" reads as an allowed small count
+    # ("5 EUR" - the pre-existing small-count gap in test_residual_small_count_ignores_the_
+    # following_word below), but "22.900" alone is still enough to reject the whole answer.
+    ("betrug 22.900,5 EUR", ["22.900"]),
+    ("param:PERS moved by 4.5% though.", ["4.5%"]),  # the identifier is masked; the figure beside it is not
+    # -- must still pass (years in window/horizon, year ranges, small counts, identifiers,
+    #    a full decision slug, "54-position", "Q1 2027", spelled-out counts) -------------------
+    ("In 2025 actuals landed above plan.", []),
+    ("The horizon runs 2026-2030.", []),
+    ("There are 3 scenarios in the grid.", []),
+    ("There are three scenarios in the grid.", []),
+    ("See param:PERS for the cost driver.", []),
+    ("The decision 2026-09-20-sunset-legacy-import is decided.", []),
+    ("the 54-position framework", []),
+    ("Q1 2027 numbers", []),
+    ("D2.P4 Wage growth", []),
+    ("", []),
+    ("No numbers here at all.", []),
+    # -- the three escapes this fix closes (decimal with no leading integer part, scientific
+    #    notation, digits immediately fused to a unit) ------------------------------------------
+    ("beta is .488", [".488"]),
+    ("revenue is 1e5", ["1e5"]),
+    ("1E-5 tolerance", ["1E-5"]),
+    ("revenue is 22900kEUR", ["22900kEUR"]),
+    # -- evasions tried and closed while rewriting the masking rule (see the module's shape
+    #    comments for why each of these would otherwise have slipped through) -----------------
+    ("the deviation was 22900-legacy-import kEUR", ["22900"]),  # fabricated 3-part "slug"
+    ("revenue moved by 500-up-again this year", ["500"]),  # fabricated 3-part "slug", smaller figure
+    ("revenue:22900 is the code", ["22900"]),  # a fake colon-prefixed "identifier"
+    ("(500) in parens", ["500"]),  # parentheses don't shield a bare number
+    ("500", ["500"]),  # a number alone, at the very start of the segment
+    ("swing of 500", ["500"]),  # a number alone, at the very end of the segment
+    ("22,,900 repeated separator", ["22", "900"]),  # a doubled separator still yields two offenders
+]
 
 
-def test_loose_figures_flags_money_and_percentages():
-    assert loose_figures("Costs came in around €1,245.7 k this year.") == ["1,245.7"]
-    assert loose_figures("Margin improved by 12.5% year over year.") == ["12.5%"]
-    assert loose_figures("A plain 500 k EUR swing.") == ["500"]
-    assert loose_figures("A negative -245.7 swing.") == ["-245.7"]
+@pytest.mark.parametrize("text,expected", LOOSE_FIGURES_CASES)
+def test_loose_figures_contract(text, expected):
+    assert loose_figures(text) == expected
 
 
-def test_loose_figures_allows_years_in_window_or_horizon():
-    assert loose_figures("In 2025 actuals landed above plan.") == []
-    assert loose_figures("The horizon runs 2026-2030.") == []
-    assert loose_figures("A year outside both windows, 2031, is not free.") == ["2031"]
+# --------------------------------------------------------------------------- residual escapes, documented
+#
+# These are NOT required to fail by the brief; each is a real, tried evasion that a bounded,
+# explicit-shape scanner still cannot close without either breaking a required "must pass" case
+# or reaching beyond what this backstop scan is for (a full grammar of natural-language number
+# formatting). Documented here, deliberately, rather than silently left for someone else to
+# rediscover - each assertion pins the CURRENT (accepted) behaviour so a future change to the
+# masking rule that accidentally widens the gap will be caught by this test failing.
 
 
-def test_loose_figures_allows_small_counts_digit_or_spelled():
-    assert loose_figures("There are 3 scenarios in the grid.") == []
-    assert loose_figures("There are three scenarios in the grid.") == []
-    assert loose_figures("500 categories would not be a count.") == ["500"]
+def test_residual_letter_prefixed_fusion_is_not_caught():
+    """The fix only closes "digits immediately followed by letters" (``22900kEUR``), the shape
+    named in the brief. The reverse - a unit written BEFORE the figure, fused with no space
+    ("USD22900", "kEUR22900") - is invisible to the scan: ``_NUMERIC_RE``'s leading boundary
+    still refuses to start a match right after a letter, exactly as it always has for the
+    trailing side before this fix. Widening that boundary risks a new false positive on
+    ordinary business shorthand ("FY2025") that was never in scope here."""
+    assert loose_figures("revenue is USD22900 this year") == []
+    assert loose_figures("revenue is kEUR22900 this year") == []
+    assert loose_figures("FY2025 results were strong") == []  # confirms the boundary was NOT widened
 
 
-def test_loose_figures_allows_identifiers_and_slugs():
-    assert loose_figures("See param:PERS for the cost driver.") == []
-    assert loose_figures("The decision 2026-09-20-sunset-legacy-import is decided.") == []
-    assert loose_figures("param:PERS moved by 4.5% though.") == ["4.5%"]
+def test_residual_short_letter_prefixed_label_is_not_caught():
+    """The label shape ("Q1", "D2.P4") caps its digit run at two digits specifically to block a
+    large fused figure ("q1500") from posing as a label - see test below. A SHORT number behind a
+    single-letter prefix ("q15") is still invisible, but only for the same reason as the test
+    above (a leading letter blocks the numeric scan outright, label shape or not) - it is not a
+    hole in the label shape itself."""
+    assert loose_figures("the value was q15 exactly") == []
 
 
-def test_loose_figures_empty_text_is_clean():
-    assert loose_figures("") == []
-    assert loose_figures("No numbers here at all.") == []
+def test_large_fused_pseudo_label_is_rejected_not_masked():
+    """Confirms the label shape's two-digit cap does its job: a large number dressed up with a
+    single-letter prefix does NOT get masked as a label. (It still isn't flagged as an offender
+    either, per the residual above - the leading letter blocks the numeric scan from ever
+    reaching it - but the important thing pinned here is that it is not wrongly treated as a safe
+    named identifier the way "Q1" is.)"""
+    from nvplan.ai.assistant import _is_identifier_shape
+
+    assert _is_identifier_shape("q1500") is False
+
+
+def test_residual_colon_and_iso_date_year_slot_are_unbounded():
+    """Both remaining "mask only" shapes leave one slot unvalidated by design: a colon token's
+    numeric segment is only checked for LENGTH (1, 2, or 4 digits - a year or a short index), and
+    an ISO date's year slot isn't range-checked at all (a decision may predate the plan horizon).
+    Either can therefore smuggle a value up to 4 digits (9999) - far smaller than the arbitrary,
+    unbounded figure the pre-fix heuristic let through, and the closest a bounded, explicit-shape
+    scanner gets without hard-coding a business-specific year range into a generic parser."""
+    assert loose_figures("plan:base:REV:9999 is the key") == []  # 4-digit colon segment, unvalidated
+    assert loose_figures("dated 1234-06-15 exactly") == []  # syntactically valid, implausible year
+
+
+def test_residual_hyphen_compound_label_is_capped_not_eliminated():
+    """"54-position" must read clean (UI.md Part 3's own example), and a hyphen-fused compound
+    is the only shape that fits it; capping the digit run at 3 digits keeps the smuggled amount
+    under 1000 rather than leaving it open-ended, but a number under that cap ("500-widgets")
+    still passes - a smaller, capped version of the same trade-off "54-position" requires."""
+    assert loose_figures("the 54-position framework") == []
+    assert loose_figures("500-widgets shipped") == []  # accepted residual: bounded to < 1000
+    assert loose_figures("22900-widgets shipped") == ["22900"]  # above the cap: rejected, not masked
+
+
+def test_residual_small_count_ignores_the_following_word():
+    """Pre-existing, unchanged by this fix: ``_is_allowed_count`` only checks that the number is
+    small (<= 20) and a word follows - it does not know whether that word is a genuine ordinal
+    ("3 scenarios") or a unit ("5 EUR"). Tightening it risks breaking the "small counts followed
+    by a word" case the brief requires to keep passing, so it is left as a documented, narrow,
+    pre-existing gap (bounded to <= 20) rather than touched here."""
+    assert loose_figures("The cost was 5 EUR.") == []
+    assert loose_figures("The cost was 12 kEUR.") == []
+
+
+# --------------------------------------------------------------------------- Touchpoint.assistant is additive
+
+
+def test_assistant_touchpoint_member_leaves_existing_records_readable(assistant_db):
+    """``Touchpoint`` is stored by member NAME (``Enum(Touchpoint)``, nvplan/db/models.py), so
+    adding ``assistant`` must not change how a row written under one of the three pre-existing
+    touchpoints reads back. Write a row exactly as pre-fix code would (naming an old member) and
+    confirm it still round-trips to that same member, unaffected by the new one existing."""
+    factory, plans, ids = assistant_db
+    with factory() as s:
+        for tp in (Touchpoint.env_scan, Touchpoint.revenue_proposal, Touchpoint.deviation_explanation):
+            s.add(
+                AiRecord(
+                    touchpoint=tp,
+                    prompt_text="p",
+                    response_text="r",
+                    rationale="pre-existing row",
+                    model_version="claude-opus-5",
+                )
+            )
+        s.commit()
+    with factory() as s:
+        recs = list(s.scalars(select(AiRecord).order_by(AiRecord.id)).all())
+    assert [r.touchpoint for r in recs] == [
+        Touchpoint.env_scan,
+        Touchpoint.revenue_proposal,
+        Touchpoint.deviation_explanation,
+    ]
 
 
 # --------------------------------------------------------------------------- ask(): verify-before-persist
@@ -122,10 +249,10 @@ def test_ask_well_formed_answer_verifies_and_persists_one_record(assistant_db):
     assert len(recs) == 1
     rec = recs[0]
     assert rec.id == answer.ai_record_id
-    # Touchpoint.deviation_explanation is reused (no `assistant` enum member is in file
-    # ownership); the rationale prefix records the distinction (see nvplan.ai.assistant doc).
-    assert rec.touchpoint is Touchpoint.deviation_explanation
-    assert rec.rationale.startswith("[assistant] ")
+    # The assistant gets its own touchpoint (Fix 2): no more reusing deviation_explanation with a
+    # "[assistant] " prefix on the rationale - the rationale is the question itself, verbatim.
+    assert rec.touchpoint is Touchpoint.assistant
+    assert rec.rationale == "What is the revenue plan, and what decision affects it?"
     assert rec.status.value == "proposed"
     assert "---USER---" in rec.prompt_text
     assert "---STRUCTURED---" in rec.response_text
