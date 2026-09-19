@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import func, select
 
 from nvplan.config import DATA_DIR, PLAN_YEARS, REGRESSION_WINDOW
+from nvplan.core.projector import revenue_key
 from nvplan.db.models import (
     AiRecord,
     Category,
@@ -28,6 +29,7 @@ from nvplan.services.planning import (
     AI_OVERRIDE_FORMULA,
     DECISION_OVERRIDE_FORMULA,
     Override,
+    load_control_table,
     run_plan,
 )
 
@@ -116,6 +118,99 @@ def test_claim_override_sets_decided_path_and_claim_id(session):
     expected = p.alpha * (1 + p.valorization_rate) ** (YEAR - T0) + p.beta * proposed_value
     assert pers.value == pytest.approx(expected, abs=1e-9)
     assert pers.path is PlanPath.cascaded
+
+
+def test_claim_override_records_displaced_default_on_all_three_rev_derivations(session):
+    """UI.md Part 1's impact route reads `displaced_default` off the derivation of every
+    REV row for the overridden year, not just base. Best / worst are `proposed x (1 +
+    spread)` pass-throughs (unchanged formula_text / parents); what each one displaced is
+    `default x (1 + spread)` for its own spread - this must now be a recorded input."""
+    proposed_value = 21000.0
+    run = run_plan(
+        session,
+        revenue_override={YEAR: Override(value=proposed_value, claim_id=42, label="ship-eu-region")},
+    )
+    ct = load_control_table(DATA_DIR / "control_table.yaml")
+    spread = {str(k): float(v) for k, v in ct["revenue_proposal"]["scenario_spread"].items()}
+
+    base_d = session.get(Derivation, run.derivation_ids[revenue_key("base", YEAR)])
+    base_default = base_d.inputs_json["default_value"]
+    assert base_default > 0
+
+    for scenario, s in spread.items():
+        d = session.get(Derivation, run.derivation_ids[revenue_key(scenario, YEAR)])
+        assert d.inputs_json["default_value"] == pytest.approx(base_default * (1.0 + s), abs=1e-9)
+        # formula_text / parent lineage of the spread pass-through must be untouched
+        assert d.formula_text == "PlanRevenue_scenario_t = PlanRevenue_base_t * (1 + spread)"
+        assert d.parent_ids_json == [run.derivation_ids[revenue_key("base", YEAR)]]
+
+    # the worked example in the task: base displaced ~23418.941468357232, spreads +-0.08
+    # (asserted structurally above via base_default; here pinned to the concrete figures
+    # so a future change to actuals.csv that shifts the default is caught loudly)
+    assert base_default == pytest.approx(23418.941468357232, abs=1e-6)
+    best_d = session.get(Derivation, run.derivation_ids[revenue_key("best", YEAR)])
+    worst_d = session.get(Derivation, run.derivation_ids[revenue_key("worst", YEAR)])
+    assert best_d.inputs_json["default_value"] == pytest.approx(25292.5, abs=0.1)
+    assert worst_d.inputs_json["default_value"] == pytest.approx(21545.4, abs=0.1)
+
+
+def test_ai_override_records_displaced_default_on_all_three_rev_derivations(session):
+    """Same treatment for the confirmed-AI-proposal path (identical shape, same route)."""
+    rec = AiRecord(touchpoint=Touchpoint.revenue_proposal, prompt_text="p", response_text="r",
+                   rationale="why", model_version="fake", proposed_value=20500.0, year=YEAR)
+    session.add(rec)
+    session.commit()
+    run = run_plan(session, revenue_override={YEAR: (20500.0, rec.id)})
+    ct = load_control_table(DATA_DIR / "control_table.yaml")
+    spread = {str(k): float(v) for k, v in ct["revenue_proposal"]["scenario_spread"].items()}
+
+    base_d = session.get(Derivation, run.derivation_ids[revenue_key("base", YEAR)])
+    base_default = base_d.inputs_json["default_value"]
+    assert base_d.formula_text == AI_OVERRIDE_FORMULA
+
+    for scenario, s in spread.items():
+        d = session.get(Derivation, run.derivation_ids[revenue_key(scenario, YEAR)])
+        assert d.inputs_json["default_value"] == pytest.approx(base_default * (1.0 + s), abs=1e-9)
+        assert d.formula_text == "PlanRevenue_scenario_t = PlanRevenue_base_t * (1 + spread)"
+        assert d.parent_ids_json == [run.derivation_ids[revenue_key("base", YEAR)]]
+
+
+def _all_plan_values(session) -> set[tuple[int, str, int, float]]:
+    """(scenario_id, category_code, year, value) for every persisted plan value - a
+    fingerprint of every figure the plan produced, used to prove the fix moved no figure."""
+    cats = {c.id: c.code for c in session.scalars(select(Category)).all()}
+    return {
+        (pv.scenario_id, cats[pv.category_id], pv.year, pv.value)
+        for pv in session.scalars(select(PlanValue)).all()
+    }
+
+
+def test_claim_override_moves_no_plan_value(session):
+    """Regression guard: recording `default_value` on best/worst is purely additive to
+    the derivation's inputs. No plan value anywhere may move. Two independent runs under
+    the same inputs (fresh scenarios each time, since run_plan is append-only) must
+    produce byte-identical sets of (scenario_kind, category, year, value)."""
+    kwargs = dict(revenue_override={YEAR: Override(value=21000.0, claim_id=42, label="ship-eu-region")})
+
+    run_a = run_plan(session, **kwargs, label_suffix=" run-a")
+    cats = {c.id: c.code for c in session.scalars(select(Category)).all()}
+    kinds_a = {sid: kind for kind, sid in run_a.scenario_ids.items()}
+    values_a = {
+        (kinds_a[pv.scenario_id], cats[pv.category_id], pv.year, pv.value)
+        for pv in session.scalars(select(PlanValue)).all()
+        if pv.scenario_id in run_a.scenario_ids.values()
+    }
+
+    run_b = run_plan(session, **kwargs, label_suffix=" run-b")
+    kinds_b = {sid: kind for kind, sid in run_b.scenario_ids.items()}
+    values_b = {
+        (kinds_b[pv.scenario_id], cats[pv.category_id], pv.year, pv.value)
+        for pv in session.scalars(select(PlanValue)).all()
+        if pv.scenario_id in run_b.scenario_ids.values()
+    }
+
+    assert values_a == values_b
+    assert len(values_a) > 0
 
 
 def test_claim_override_year_outside_plan_years_raises(session):

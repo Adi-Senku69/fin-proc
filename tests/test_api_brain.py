@@ -198,7 +198,7 @@ def test_11_impact_for_sunset_decision_returns_displaced_default(client, state):
     r = client.get(f"/brain/claims/{state['sunset_id']}/impact")
     assert r.status_code == 200, r.text
     rows = r.json()
-    assert len(rows) >= 1
+    assert len(rows) == 3  # base, best, worst - one decided REV row per scenario
     for row in rows:
         assert set(row) == {
             "plan_value_id", "scenario_kind", "category_code", "year", "value", "path", "displaced_default",
@@ -206,10 +206,25 @@ def test_11_impact_for_sunset_decision_returns_displaced_default(client, state):
         assert row["category_code"] == "REV"
         assert row["year"] == 2027
         assert row["path"] == "decided"
+        # the whole point of the fix: no row is left with a null displaced_default
+        assert row["displaced_default"] is not None
+
+    by_kind = {row["scenario_kind"] for row in rows}
+    assert by_kind == {"base", "best", "worst"}
 
     base_row = next(row for row in rows if row["scenario_kind"] == "base")
     assert base_row["value"] == pytest.approx(22900.0)
     assert base_row["displaced_default"] == pytest.approx(state["default_2027"])
+
+    # best / worst displaced = base displaced default x (1 + that scenario's spread);
+    # the task's worked example: base displaced ~23418.941468357232, spreads +-0.08 ->
+    # best displaced 25292.5, worst displaced 21545.4 (to one decimal).
+    best_row = next(row for row in rows if row["scenario_kind"] == "best")
+    worst_row = next(row for row in rows if row["scenario_kind"] == "worst")
+    assert best_row["displaced_default"] == pytest.approx(base_row["displaced_default"] * 1.08, abs=1e-9)
+    assert worst_row["displaced_default"] == pytest.approx(base_row["displaced_default"] * 0.92, abs=1e-9)
+    assert best_row["displaced_default"] == pytest.approx(25292.5, abs=0.1)
+    assert worst_row["displaced_default"] == pytest.approx(21545.4, abs=0.1)
 
 
 def test_12_impact_empty_for_a_claim_that_drove_nothing(client, state):

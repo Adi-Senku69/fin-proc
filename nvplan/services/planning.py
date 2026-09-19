@@ -302,6 +302,25 @@ def run_plan(
             plan.loc[mask, "path"] = "ai_proposed"
             plan.loc[mask, "ai_record_id"] = ov.ai_record_id
 
+        # best / worst REV of that year are already `proposed x (1 + spread)`
+        # pass-throughs (scenario_revenue_paths, registered by project_all above); what
+        # each one displaced is therefore `default x (1 + spread)` for its own spread.
+        # Record that as an additional input, purely additive: formula_text and parents
+        # stay exactly the spread pass-through they already are (UI.md Part 1 / the
+        # impact route needs a displaced default on all three rows, not just base).
+        default_before = float(default_path.loc[y])
+        for scenario, s in spread.items():
+            k = revenue_key(scenario, y)
+            d = ledger.get(k)
+            ledger.add(
+                k,
+                d.formula_text,
+                inputs={**d.inputs, "default_value": default_before * (1.0 + float(s))},
+                parameters=d.parameters,
+                parents=d.parents,
+                replace=True,
+            )
+
     # DEPR plan rows point at depr:{year}; statements reference plan:{scenario}:DEPR:{year}.
     # Register that pass-through so both resolve to one derivation per plan value.
     for scenario in SCENARIOS:
