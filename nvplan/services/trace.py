@@ -168,8 +168,9 @@ class _Lookup:
                 "status": claim.status,
                 "decided_on": claim.date.isoformat() if claim.date else None,
                 "evidence": [{"text": e.text, "tag_raw": e.tag_raw} for e in evidence],
-                # Not a column on today's Claim model (PLATFORM.md §7.1: "if the index
-                # carries one") - stays None until/unless one is added there.
+                # Claim.reversal_condition (PLATFORM.md §4.4) is a real column - the
+                # getattr stays defensive so a stale/older provenance DB that predates
+                # the column degrades to None here instead of raising.
                 "reversal_condition": getattr(claim, "reversal_condition", None),
             }
         except Exception:

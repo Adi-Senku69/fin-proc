@@ -74,6 +74,10 @@ class ParsedFile:
     # Decisions only (PLATFORM.md §7.1); None when the file carries no
     # "## Quantified effect" block, or is not a decision file at all.
     effect: QuantifiedEffectBlock | None = None
+    # The indexed form of "## What would reverse this" (PLATFORM.md §4.4),
+    # whitespace-normalised. None when the section is absent, empty, or the file is
+    # not a decision file at all - the file remains the source of truth.
+    reversal_condition: str | None = None
 
 
 def _read(path: Path) -> tuple[str, str]:
@@ -261,6 +265,18 @@ def _parse_effect_block(sections: tuple[ParsedSection, ...]) -> QuantifiedEffect
     return QuantifiedEffectBlock(category=category, year=year, value=value, unit=unit, raw=raw)
 
 
+def _parse_reversal_condition(sections: tuple[ParsedSection, ...]) -> str | None:
+    """The indexed form of ``## What would reverse this`` (PLATFORM.md §4.4):
+    whitespace-normalised (runs of whitespace, including newlines, collapsed to a
+    single space, then stripped). ``None`` when the heading is absent or its body is
+    empty/whitespace-only."""
+    body = _section_body(sections, "What would reverse this")
+    if body is None:
+        return None
+    normalized = re.sub(r"\s+", " ", body).strip()
+    return normalized or None
+
+
 def parse_decision_file(path: str | Path) -> ParsedFile:
     path = Path(path)
     text, sha = _read(path)
@@ -269,6 +285,7 @@ def parse_decision_file(path: str | Path) -> ParsedFile:
     status = _first_nonempty_line(_section_body(sections, "Status"))
     date = _first_nonempty_line(_section_body(sections, "Date"))
     effect = _parse_effect_block(sections)
+    reversal_condition = _parse_reversal_condition(sections)
 
     evidence_rows: dict[str, tuple[str, ...]] = {}
     for sec in sections:
@@ -288,6 +305,7 @@ def parse_decision_file(path: str | Path) -> ParsedFile:
         body_sha256=sha,
         errors=errors,
         effect=effect,
+        reversal_condition=reversal_condition,
     )
 
 

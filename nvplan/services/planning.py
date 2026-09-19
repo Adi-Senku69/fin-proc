@@ -90,12 +90,16 @@ DECISION_OVERRIDE_FORMULA = "confirmed decision"
 class Override:
     """A revenue override, sourced from either a confirmed AI proposal (``ai_record_id``)
     or a decided decision (``claim_id``) - PLATFORM.md §7.1. Exactly one of the two ids
-    must be set; the other stays ``None``."""
+    must be set; the other stays ``None``.
+
+    The base REV derivation's ``formula_text`` is not a field here: ``run_plan`` derives
+    it from which id is set (``claim_id`` -> :data:`DECISION_OVERRIDE_FORMULA`,
+    ``ai_record_id`` -> :data:`AI_OVERRIDE_FORMULA`), so there is no separate value to
+    pass in or to disagree with the id that was actually set."""
 
     value: float
     ai_record_id: int | None = None
     claim_id: int | None = None
-    formula_text: str = AI_OVERRIDE_FORMULA
     label: str = ""
 
     def __post_init__(self) -> None:

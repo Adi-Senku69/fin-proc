@@ -15,8 +15,10 @@ Two scenarios:
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from nvplan.config import DATA_DIR
@@ -26,6 +28,8 @@ from nvplan.ingest.actuals import ingest_actuals, load_actuals_csv
 from nvplan.services.planning import Override, run_plan
 from nvplan.services.trace import find_plan_value, render_trace, trace_plan_value
 
+from brainkit.ingest import ingest_tree
+
 from provenance import Claim, ClaimKind, Evidence, EvidenceSection, TagKind
 from provenance.models import Base as ProvenanceBase
 
@@ -34,6 +38,10 @@ DECISION_TITLE = "Ship EU region pricing"
 DECISION_SLUG = "ship-eu-region-pricing"
 TAG_A = "(stakeholder-verbal, Jane Doe, 2026-02-01)"
 TAG_B = "(computed, param:REV)"
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+REAL_BRAIN_ROOT = REPO_ROOT / "brain"
+REAL_REVERSAL_SLUG = "2026-09-20-sunset-legacy-import"
 
 
 def _seed_finance(session: Session) -> None:
@@ -143,3 +151,73 @@ def test_graceful_degradation_on_finance_only_database(finance_only_session):
 
     text = render_trace(tree)  # must not raise either
     assert "claim:" not in text
+
+
+# --------------------------------------------------------------------------- reversal condition (PLATFORM.md §4.4)
+
+
+def test_claim_block_carries_reversal_condition_when_indexed(joint_session):
+    """A Claim whose reversal_condition column is populated shows the condition on its
+    own indented line under the claim block, prefixed clearly as the reversal condition."""
+    session = joint_session
+    claim = _insert_claim_with_evidence(session)
+    claim.reversal_condition = "If churn exceeds 5% quarter over quarter, we would revisit."
+    session.commit()
+
+    run_plan(
+        session,
+        revenue_override={YEAR: Override(value=21500.0, claim_id=claim.id, label=claim.slug)},
+    )
+    pers = find_plan_value(session, scenario_kind="base", category_code="PERS", year=YEAR)
+    tree = trace_plan_value(session, pers.id)
+
+    rev_node = tree.find(key=f"plan:base:REV:{YEAR}")
+    assert rev_node.claim["reversal_condition"] == claim.reversal_condition
+
+    text = render_trace(tree)
+    assert "reversal condition: If churn exceeds 5%" in text
+
+
+def test_claim_block_omits_reversal_line_when_none(joint_session):
+    """A decision with no (or an empty) '## What would reverse this' section indexes
+    reversal_condition as None; the trace must render with no crash and no line for it -
+    graceful degradation must hold for a missing reversal exactly like a missing claim."""
+    session = joint_session
+    claim = _insert_claim_with_evidence(session)  # reversal_condition left at its default: None
+    assert claim.reversal_condition is None
+
+    run_plan(
+        session,
+        revenue_override={YEAR: Override(value=21500.0, claim_id=claim.id, label=claim.slug)},
+    )
+    pers = find_plan_value(session, scenario_kind="base", category_code="PERS", year=YEAR)
+    tree = trace_plan_value(session, pers.id)  # must not raise
+
+    rev_node = tree.find(key=f"plan:base:REV:{YEAR}")
+    assert rev_node.claim["reversal_condition"] is None
+
+    text = render_trace(tree)  # must not raise
+    assert "reversal condition:" not in text
+
+
+def test_reversal_condition_round_trips_from_markdown_to_render_trace(joint_session):
+    """Full pipeline, real worked example (PLATFORM.md §4.4): brainkit.ingest indexes
+    brain/decisions/2026-09-20-sunset-legacy-import.md's '## What would reverse this'
+    prose onto its Claim, and nvplan.services.trace prints it in the trace of a
+    downstream plan value the decision's revenue override touches."""
+    session = joint_session
+    report = ingest_tree(session, REAL_BRAIN_ROOT, strict=True)
+    assert report.rejected == ()
+    claim = session.execute(select(Claim).where(Claim.slug == REAL_REVERSAL_SLUG)).scalar_one()
+    assert claim.reversal_condition is not None
+
+    run_plan(
+        session,
+        revenue_override={YEAR: Override(value=22900.0, claim_id=claim.id, label=claim.slug)},
+    )
+    pers = find_plan_value(session, scenario_kind="base", category_code="PERS", year=YEAR)
+    tree = trace_plan_value(session, pers.id)
+    text = render_trace(tree)
+
+    assert "reversal condition:" in text
+    assert "10 currently-active" in text

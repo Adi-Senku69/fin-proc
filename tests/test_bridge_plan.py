@@ -60,6 +60,14 @@ def test_override_requires_exactly_one_id():
         Override(value=1.0, ai_record_id=1, claim_id=2)  # both
 
 
+def test_override_has_no_formula_text_field():
+    """formula_text was a dead field: run_plan always derives the formula from which id
+    is set, never from Override itself. It must be gone from the dataclass entirely,
+    not merely unused."""
+    with pytest.raises(TypeError):
+        Override(value=1.0, claim_id=1, formula_text="x")
+
+
 # --------------------------------------------------------------------------- claim-sourced override
 
 

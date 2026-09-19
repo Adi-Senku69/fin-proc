@@ -251,6 +251,7 @@ def ingest_tree(
             claim.date = claim_date
             claim.body_sha256 = parsed.body_sha256
             claim.effect_json = effect_json
+            claim.reversal_condition = parsed.reversal_condition
         else:
             claim = Claim(
                 kind=_claim_kind_for(parsed, path),
@@ -261,6 +262,7 @@ def ingest_tree(
                 date=claim_date,
                 body_sha256=parsed.body_sha256,
                 effect_json=effect_json,
+                reversal_condition=parsed.reversal_condition,
             )
             session.add(claim)
             session.flush()

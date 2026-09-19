@@ -117,6 +117,13 @@ class Claim(Base):
     # Indexed form of a decision's optional "## Quantified effect" block - see module
     # docstring. Null for every claim that carries no such block.
     effect_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Indexed form of a decision's "## What would reverse this" section (PLATFORM.md
+    # §4.4): the observable condition - a metric threshold, a named signal, or a date -
+    # that would overturn the decision. Whitespace-normalised text, null when the
+    # section is absent or empty (non-decision claims, or a decision that doesn't carry
+    # one yet). The markdown file remains the source of truth; this column is a
+    # read-optimized cache rebuilt from it on every re-ingest, exactly like effect_json.
+    reversal_condition: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     evidence: Mapped[list[Evidence]] = relationship(back_populates="claim", foreign_keys="Evidence.claim_id")
 

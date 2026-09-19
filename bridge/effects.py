@@ -16,7 +16,6 @@ a parallel change against the same PLATFORM.md §7.1 contract:
         value: float
         ai_record_id: int | None = None
         claim_id: int | None = None
-        formula_text: str = AI_OVERRIDE_FORMULA
         label: str = ""
     DECISION_OVERRIDE_FORMULA = "confirmed decision"
 
@@ -42,7 +41,7 @@ except ImportError:  # pragma: no cover - exercised only before the parallel cha
     Override = None  # type: ignore[assignment]
     DECISION_OVERRIDE_FORMULA = "confirmed decision"
 
-__all__ = ["QuantifiedEffect", "decided_effects", "revenue_override", "WIRED_CATEGORY"]
+__all__ = ["QuantifiedEffect", "OverridePlan", "decided_effects", "revenue_override", "WIRED_CATEGORY"]
 
 #: PLATFORM.md §7.1: only REV currently drives the plan.
 WIRED_CATEGORY = "REV"
@@ -95,14 +94,23 @@ def decided_effects(session: Session) -> list[QuantifiedEffect]:
     return out
 
 
-def revenue_override(effects: Sequence[QuantifiedEffect]) -> dict[int, "Override"]:
-    """``REV``-category effects only -> ``{year: Override(...)}``.
+@dataclass(frozen=True)
+class OverridePlan:
+    """Result of :func:`revenue_override`: the ``year -> Override`` mapping the planning
+    run accepts, plus which claim ids lost a same-year conflict (PLATFORM.md §7.1)."""
+
+    overrides: dict[int, "Override"]
+    shadowed: tuple[int, ...]
+
+
+def revenue_override(effects: Sequence[QuantifiedEffect]) -> OverridePlan:
+    """``REV``-category effects only -> an :class:`OverridePlan`.
 
     When two decided decisions target the same year, the newer ``decided_on`` wins and the
-    older is skipped from the returned mapping. The shadowed (losing) claim ids are exposed
-    as ``revenue_override.last_shadowed`` — a tuple of claim ids, set on this function object
-    as a documented side attribute each call, since the function's return type is fixed by
-    PLATFORM.md §7.1 to a single ``dict[int, Override]`` with no room for a second value.
+    older is shadowed: its claim id lands in ``OverridePlan.shadowed`` rather than in
+    ``OverridePlan.overrides``. Resolution is independent of input order, and an exact tie
+    keeps the earlier-encountered entry. This is a pure function of ``effects`` - nothing is
+    kept between calls, so two calls never see each other's results.
     """
     if Override is None:
         raise ImportError(
@@ -127,16 +135,12 @@ def revenue_override(effects: Sequence[QuantifiedEffect]) -> dict[int, "Override
         else:
             shadowed.append(eff.claim_id)
 
-    revenue_override.last_shadowed = tuple(shadowed)
-    return {
+    overrides = {
         year: Override(
             value=eff.value,
             claim_id=eff.claim_id,
-            formula_text=DECISION_OVERRIDE_FORMULA,
             label=eff.decision_slug,
         )
         for year, eff in winners.items()
     }
-
-
-revenue_override.last_shadowed = ()  # type: ignore[attr-defined]
+    return OverridePlan(overrides=overrides, shadowed=tuple(shadowed))

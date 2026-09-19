@@ -93,18 +93,18 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {eff.decision_slug}: {eff.category_code} {eff.year} = {eff.value:,.1f} {eff.unit}")
 
             try:
-                override = revenue_override(effects)
+                plan = revenue_override(effects)
             except ImportError as exc:
                 print(f"cannot build the revenue override yet: {exc}")
                 return 1
 
+            override = plan.overrides
             if not override:
                 print(f"no {WIRED_CATEGORY!r} decided effect found - nothing to override; aborting")
                 return 1
             print(f"revenue override built for year(s): {sorted(override)}")
-            shadowed = getattr(revenue_override, "last_shadowed", ())
-            if shadowed:
-                print(f"shadowed (superseded by a newer decision on the same year) claim ids: {shadowed}")
+            if plan.shadowed:
+                print(f"shadowed (superseded by a newer decision on the same year) claim ids: {plan.shadowed}")
 
             year = sorted(override)[0]
             before_rev = find_plan_value(session, scenario_kind="base", category_code="REV", year=year)

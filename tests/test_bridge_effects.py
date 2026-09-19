@@ -73,12 +73,15 @@ None - this is a fixture.
 VALID_REV_EFFECT = "- category: REV\n- year: 2027\n- value: 100.5\n- unit: kEUR"
 
 
-def _write_decision(brain_root: Path, name: str, *, status: str, effect_lines: str, title: str | None = None) -> Path:
+def _write_decision(
+    brain_root: Path, name: str, *, status: str, effect_lines: str, title: str | None = None,
+    reversal: str = REVERSAL,
+) -> Path:
     decisions = brain_root / "decisions"
     decisions.mkdir(parents=True, exist_ok=True)
     path = decisions / name
     path.write_text(
-        _TEMPLATE.format(title=title or name, status=status, reversal=REVERSAL, effect_lines=effect_lines)
+        _TEMPLATE.format(title=title or name, status=status, reversal=reversal, effect_lines=effect_lines)
     )
     return path
 
@@ -205,6 +208,42 @@ class TestMalformedEffectRejectedAtIngest:
         assert claim.effect_json == {"category": "REV", "year": 2027, "value": 100.5, "unit": "kEUR"}
 
 
+# --------------------------------------------------------------------------- reversal condition (PLATFORM.md §4.4)
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+REAL_BRAIN_ROOT = REPO_ROOT / "brain"
+REAL_REVERSAL_SLUG = "2026-09-20-sunset-legacy-import"
+
+
+class TestReversalConditionIndexing:
+    def test_real_worked_example_reversal_condition_is_indexed(self, prov_session):
+        """End-to-end round trip on the real worked example (PLATFORM.md §4.4): the
+        ``## What would reverse this`` prose in brain/decisions/2026-09-20-sunset-legacy-
+        import.md must land on the indexed Claim, whitespace-normalised."""
+        report = ingest_tree(prov_session, REAL_BRAIN_ROOT, strict=True)
+        assert report.rejected == ()
+        claim = prov_session.execute(select(Claim).where(Claim.slug == REAL_REVERSAL_SLUG)).scalar_one()
+        assert claim.reversal_condition is not None
+        assert "10 currently-active" in claim.reversal_condition
+        assert "\n" not in claim.reversal_condition  # whitespace-normalised, not raw markdown
+
+    def test_reversal_condition_indexes_as_none_when_section_is_empty(self, tmp_path, prov_session):
+        brain_root = tmp_path / "brain"
+        path = _write_decision(
+            brain_root, "2026-01-01-empty-reversal.md", status="pending",
+            effect_lines=VALID_REV_EFFECT, reversal="",
+        )
+        # pending + a quantified effect block would fire effect_on_undecided (error) and
+        # block strict ingest; the effect block is irrelevant to this test, so drop it.
+        text = path.read_text().rsplit("\n\n## Quantified effect", 1)[0] + "\n"
+        path.write_text(text)
+
+        report = ingest_tree(prov_session, brain_root, strict=True)
+        assert report.ingested == 1
+        claim = prov_session.execute(select(Claim)).scalar_one()
+        assert claim.reversal_condition is None
+
+
 # --------------------------------------------------------------------------- decided_effects
 
 
@@ -252,7 +291,7 @@ _SKIP_REASON = (
 class TestRevenueOverride:
     @pytest.mark.skipif(not _OVERRIDE_AVAILABLE, reason=_SKIP_REASON)
     def test_maps_rev_only_and_newer_decision_wins_on_conflict(self):
-        from bridge.effects import DECISION_OVERRIDE_FORMULA
+        from bridge.effects import OverridePlan
 
         old = QuantifiedEffect(
             claim_id=1, decision_slug="old-decision", decision_title="Old", category_code="REV",
@@ -267,14 +306,14 @@ class TestRevenueOverride:
             year=2027, value=10.0, unit="kEUR", status="decided", decided_on=datetime.date(2026, 1, 1),
         )
 
-        override_map = revenue_override([old, newer, pers])
+        plan = revenue_override([old, newer, pers])
 
-        assert set(override_map) == {2027}
-        assert override_map[2027].value == 200.0
-        assert override_map[2027].claim_id == 2
-        assert override_map[2027].label == "new-decision"
-        assert override_map[2027].formula_text == DECISION_OVERRIDE_FORMULA
-        assert revenue_override.last_shadowed == (1,)
+        assert isinstance(plan, OverridePlan)
+        assert set(plan.overrides) == {2027}
+        assert plan.overrides[2027].value == 200.0
+        assert plan.overrides[2027].claim_id == 2
+        assert plan.overrides[2027].label == "new-decision"
+        assert plan.shadowed == (1,)
 
     @pytest.mark.skipif(not _OVERRIDE_AVAILABLE, reason=_SKIP_REASON)
     def test_order_independent_conflict_resolution(self):
@@ -287,6 +326,31 @@ class TestRevenueOverride:
             year=2029, value=2.0, unit="kEUR", status="decided", decided_on=datetime.date(2025, 6, 1),
         )
         # newer listed first this time - result must be identical
-        override_map = revenue_override([newer, old])
-        assert override_map[2029].claim_id == 11
-        assert revenue_override.last_shadowed == (10,)
+        plan = revenue_override([newer, old])
+        assert plan.overrides[2029].claim_id == 11
+        assert plan.shadowed == (10,)
+
+    @pytest.mark.skipif(not _OVERRIDE_AVAILABLE, reason=_SKIP_REASON)
+    def test_two_calls_do_not_contaminate_each_other(self):
+        """revenue_override is a pure function of its argument: a call that produces a
+        shadowed claim must never leak into the shadowed tuple of an unrelated later
+        call (the old ``revenue_override.last_shadowed`` function attribute could)."""
+        old = QuantifiedEffect(
+            claim_id=100, decision_slug="old", decision_title="Old", category_code="REV",
+            year=2030, value=1.0, unit="kEUR", status="decided", decided_on=datetime.date(2025, 1, 1),
+        )
+        newer = QuantifiedEffect(
+            claim_id=101, decision_slug="new", decision_title="New", category_code="REV",
+            year=2030, value=2.0, unit="kEUR", status="decided", decided_on=datetime.date(2025, 6, 1),
+        )
+        first_plan = revenue_override([old, newer])
+        assert first_plan.shadowed == (100,)
+
+        no_conflict = QuantifiedEffect(
+            claim_id=200, decision_slug="lone", decision_title="Lone", category_code="REV",
+            year=2031, value=5.0, unit="kEUR", status="decided", decided_on=datetime.date(2025, 1, 1),
+        )
+        second_plan = revenue_override([no_conflict])
+        assert second_plan.shadowed == ()
+        # the first call's result is untouched by the second call having run
+        assert first_plan.shadowed == (100,)
