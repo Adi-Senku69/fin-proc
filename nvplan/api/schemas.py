@@ -217,3 +217,105 @@ class BacktestYearOut(BaseModel):
     rows: list[dict[str, Any]]
     fits: list[dict[str, Any]]
     note: str
+
+
+# --------------------------------------------------------------------------- brain / bridge (PLATFORM.md §7, §7.1; UI.md Part 1)
+
+
+class FindingOut(BaseModel):
+    """``brainkit.validate.Finding``, serialised. ``path`` is relative to the repository
+    root, never absolute (UI.md Part 1)."""
+
+    path: str
+    line: int | None = None
+    code: str
+    message: str
+    severity: str
+
+
+class BrainIngestOut(BaseModel):
+    files_seen: int
+    ingested: int
+    skipped_unchanged: int
+    rejected: list[str] = Field(default_factory=list, description="paths rejected under strict ingest")
+    findings: list[FindingOut] = Field(default_factory=list)
+
+
+class BrainValidateOut(BaseModel):
+    errors: list[FindingOut] = Field(default_factory=list)
+    warnings: list[FindingOut] = Field(default_factory=list)
+    clean: bool
+
+
+class ClaimOut(BaseModel):
+    id: int
+    kind: str
+    slug: str
+    title: str | None
+    status: str | None
+    date: str | None
+    path: str | None
+    has_effect: bool
+
+
+class EvidenceOut(BaseModel):
+    section: str
+    text: str
+    tag_kind: str
+    tag_raw: str
+    target_path: str | None = None
+    resolved: bool
+
+
+class EffectOut(BaseModel):
+    category_code: str | None = None
+    year: int | None = None
+    value: float | None = None
+    unit: str | None = None
+
+
+class ClaimLinkOut(BaseModel):
+    relation: str
+    other_slug: str | None = None
+
+
+class ClaimDetailOut(ClaimOut):
+    evidence: list[EvidenceOut] = Field(default_factory=list)
+    reversal_condition: str | None = None
+    effect: EffectOut | None = None
+    links: list[ClaimLinkOut] = Field(default_factory=list)
+
+
+class DecidedEffectOut(BaseModel):
+    claim_id: int
+    decision_slug: str
+    decision_title: str
+    category_code: str
+    year: int
+    value: float
+    unit: str
+    decided_on: str | None = None
+
+
+class BridgeApplyIn(BaseModel):
+    created_by: str = "bridge"
+    label_suffix: str = ""
+
+
+class BridgeApplyOut(BaseModel):
+    plan_run: PlanRunOut | None = None
+    applied: list[int] = Field(default_factory=list, description="plan years affected by a decided effect")
+    shadowed: list[int] = Field(default_factory=list, description="claim ids superseded by a newer decision on the same year")
+    message: str | None = Field(default=None, description="set (with plan_run=None) when there was nothing decided to apply")
+
+
+class ImpactRowOut(BaseModel):
+    plan_value_id: int
+    scenario_kind: str
+    category_code: str
+    year: int
+    value: float
+    path: str
+    displaced_default: float | None = Field(
+        default=None, description="the default value this decision replaced, when the derivation recorded one"
+    )

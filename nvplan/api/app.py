@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
 from nvplan import config
@@ -47,9 +48,24 @@ from nvplan.services.gate import GateError, confirm_proposal, reject_proposal
 from nvplan.services.planning import PlanRun, run_plan
 from nvplan.services.trace import render_trace, trace_plan_value, trace_statement_line
 
+# The brain / bridge endpoints (PLATFORM.md §7, §7.1; UI.md Part 1). ``nvplan/api`` is the
+# platform's demo/composition layer - the one place meant to import both ``brainkit`` and
+# ``bridge`` (see ``nvplan/api/queries.py``'s import comment for the layering note this
+# supersedes here, by the same UI.md instruction).
+from brainkit.ingest import ingest_tree
+from brainkit.validate import Finding, validate_tree
+from bridge.db import init_platform_db
+from bridge.effects import decided_effects, revenue_override
+from bridge.lookup import make_derivation_lookup
+
 ModelFactory = Callable[[str, dict[str, Any]], Any]
 
 XLSX_TYPES = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel")
+
+# repo root: nvplan/api/app.py -> nvplan/api -> nvplan -> repo root.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_BRAIN_ROOT = REPO_ROOT / "brain"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 # --------------------------------------------------------------------------- factory
@@ -57,10 +73,16 @@ XLSX_TYPES = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
 
 def make_session_factory(db_url: str | None = None) -> sessionmaker:
     """Engine + bound sessionmaker. SQLite gets ``check_same_thread=False`` because the AI
-    tools run in worker threads and share the factory."""
+    tools run in worker threads and share the factory.
+
+    ``bridge.db.init_platform_db`` creates both the nvplan tables and the provenance
+    (claim/evidence/claim_link) tables on the same engine, so one session reads both
+    (PLATFORM.md §7.1). ``create_all`` only creates tables that don't already exist, so an
+    existing finance-only database file keeps serving every route it already served and
+    additionally gains the brain tables on next boot - no migration step, no error."""
     url = db_url or os.environ.get("NVPLAN_DB_URL") or config.DEFAULT_DB_URL
     kwargs = {"connect_args": {"check_same_thread": False}} if url.startswith("sqlite") else {}
-    engine = init_db(get_engine(url, **kwargs))
+    engine = init_platform_db(init_db(get_engine(url, **kwargs)))
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     with factory() as s:
         seed_categories(s)
@@ -95,6 +117,21 @@ def _plan_run_out(run: PlanRun) -> dict[str, Any]:
         "n_plan_values": run.n_plan_values, "n_statement_lines": run.n_statement_lines, "label": run.label,
         "created_at": run.created_at.isoformat() if run.created_at else None,
     }
+
+
+def _repo_relative(path: Path) -> str:
+    """``path``, relative to the repository root when possible - never absolute (UI.md Part
+    1). Falls back to the path as given for anything outside the repo (a custom
+    ``brain_root`` elsewhere on disk), rather than raising."""
+    try:
+        return str(Path(path).resolve().relative_to(REPO_ROOT).as_posix())
+    except ValueError:
+        return str(path)
+
+
+def _finding_dict(f: Finding) -> dict[str, Any]:
+    return {"path": _repo_relative(f.path), "line": f.line, "code": f.code, "message": f.message,
+            "severity": f.severity}
 
 
 def resolve_model(app: FastAPI, touchpoint: str, context: dict[str, Any]):
@@ -309,6 +346,77 @@ def _register(app: FastAPI) -> None:
     def deviation_backtest_year(year: int = Query(..., description="a year with actuals, e.g. 2025"),
                                 window_len: int = Query(5, ge=3), session: Session = Depends(get_session)):
         return q.backtest_year_deviation(session, year, window_len=window_len)
+
+    # ---- brain / bridge (PLATFORM.md §7, §7.1; UI.md Part 1) --------------------
+
+    @app.post("/brain/ingest", response_model=S.BrainIngestOut)
+    def brain_ingest(
+        brain_root: str | None = Query(None, description="default: the repository's brain/ directory"),
+        session: Session = Depends(get_session),
+    ):
+        root = Path(brain_root) if brain_root else DEFAULT_BRAIN_ROOT
+        lookup = make_derivation_lookup(session)
+        report = ingest_tree(session, root, strict=True, derivation_lookup=lookup)
+        return {
+            "files_seen": report.files_seen,
+            "ingested": report.ingested,
+            "skipped_unchanged": report.skipped_unchanged,
+            "rejected": [_repo_relative(p) for p in report.rejected],
+            "findings": [_finding_dict(f) for f in report.findings],
+        }
+
+    @app.get("/brain/validate", response_model=S.BrainValidateOut)
+    def brain_validate(brain_root: str | None = Query(None, description="default: the repository's brain/ directory")):
+        root = Path(brain_root) if brain_root else DEFAULT_BRAIN_ROOT
+        findings = validate_tree(root)
+        errors = [_finding_dict(f) for f in findings if f.severity == "error"]
+        warnings = [_finding_dict(f) for f in findings if f.severity == "warning"]
+        return {"errors": errors, "warnings": warnings, "clean": not errors}
+
+    @app.get("/brain/claims", response_model=list[S.ClaimOut])
+    def brain_claims(kind: str | None = None, status: str | None = None, session: Session = Depends(get_session)):
+        return q.list_claims(session, kind=kind, status=status)
+
+    @app.get("/brain/claims/{claim_id}", response_model=S.ClaimDetailOut)
+    def brain_claim_detail(claim_id: int, session: Session = Depends(get_session)):
+        return q.claim_detail(session, claim_id)
+
+    @app.get("/brain/claims/{claim_id}/impact", response_model=list[S.ImpactRowOut])
+    def brain_claim_impact(claim_id: int, session: Session = Depends(get_session)):
+        return q.claim_impact(session, claim_id)
+
+    @app.get("/brain/effects", response_model=list[S.DecidedEffectOut])
+    def brain_effects(session: Session = Depends(get_session)):
+        return q.decided_effects_list(session)
+
+    @app.post("/bridge/apply", response_model=S.BridgeApplyOut)
+    def bridge_apply(body: S.BridgeApplyIn = S.BridgeApplyIn(), session: Session = Depends(get_session)):
+        effects = decided_effects(session)
+        plan = revenue_override(effects)
+        if not plan.overrides:
+            return {
+                "plan_run": None, "applied": [], "shadowed": list(plan.shadowed),
+                "message": "no decided effect to apply; the plan was not rerun",
+            }
+        run = run_plan(
+            session, created_by=body.created_by, revenue_override=plan.overrides, label_suffix=body.label_suffix
+        )
+        return {
+            "plan_run": _plan_run_out(run), "applied": sorted(plan.overrides), "shadowed": list(plan.shadowed),
+            "message": None,
+        }
+
+    # ---- static UI (UI.md Part 2) -----------------------------------------------
+
+    @app.get("/", include_in_schema=False)
+    def index():
+        index_path = STATIC_DIR / "index.html"
+        if not index_path.is_file():
+            return PlainTextResponse("nvplan/api/static/index.html not found", status_code=404)
+        return FileResponse(str(index_path))
+
+    if STATIC_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # --------------------------------------------------------------------------- serve

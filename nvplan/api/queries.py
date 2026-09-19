@@ -39,6 +39,18 @@ from nvplan.db.session import category_map
 from nvplan.ingest.actuals import actuals_frame
 from nvplan.services.planning import KEY_FIELD
 
+# The brain / bridge index (PLATFORM.md §6, §7.1; UI.md Part 1). ``provenance`` is the
+# shared provenance core - nvplan importing it is the same, already-established choice
+# ``nvplan.services.trace`` makes (see that module's docstring): it is not ``brainkit``,
+# which stays off-limits to nvplan proper. ``bridge.effects`` is imported too, for the one
+# read-only reuse (``decided_effects``) that the ``/brain/effects`` route needs verbatim
+# rather than re-deriving the same "decided decision with an effect" query a second time;
+# ``nvplan/api`` is the platform's demo/composition layer, the intended exception to the
+# "nvplan never imports brainkit" rule (PLATFORM.md §7.1), not the core engine.
+from provenance import Claim, ClaimKind, ClaimLink, DecisionStatus, Evidence, HypothesisStatus
+
+from bridge.effects import decided_effects as _decided_effects
+
 GRID_CODES: list[str] = [*config.CATEGORY_CODES, *config.COMPONENT_CODES]  # REV, MAT, EXT, PERS, OTH, DEPR
 COST_CODES: list[str] = [c for c in config.CATEGORY_CODES if c != "REV"]
 
@@ -415,3 +427,129 @@ def backtest_year_deviation(session: Session, year: int, window_len: int = 5) ->
     return {"year": int(year), "train_window": [lo, hi], "rows": _records(err), "fits": _records(res.fits),
             "note": ("not persisted; REV on basis default_revenue is the valorized default path, "
                      "costs on basis actual_revenue are the cascade given the actual revenue")}
+
+
+# --------------------------------------------------------------------------- brain / bridge
+
+
+_VALID_CLAIM_KINDS: set[str] = {k.value for k in ClaimKind}
+# Claim.status is a plain string column (different claim kinds have different lifecycles -
+# PLATFORM.md §6's Claim table comment); a filter value is accepted when it is a member of
+# ANY lifecycle a claim can carry, including the existing ai_proposal one (PLATFORM.md §4.3).
+_VALID_CLAIM_STATUSES: set[str] = (
+    {s.value for s in DecisionStatus} | {s.value for s in HypothesisStatus} | {"proposed", "confirmed", "rejected"}
+)
+
+
+def _claim_kind_or_400(value: str) -> ClaimKind:
+    try:
+        return ClaimKind(value)
+    except ValueError as e:
+        raise ValueError(f"unknown claim kind {value!r}; expected one of {sorted(_VALID_CLAIM_KINDS)}") from e
+
+
+def _claim_status_or_400(value: str) -> str:
+    if value not in _VALID_CLAIM_STATUSES:
+        raise ValueError(f"unknown claim status {value!r}; expected one of {sorted(_VALID_CLAIM_STATUSES)}")
+    return value
+
+
+def claim_summary(c: Claim) -> dict[str, Any]:
+    return {
+        "id": c.id, "kind": c.kind.value, "slug": c.slug, "title": c.title, "status": c.status,
+        "date": c.date.isoformat() if c.date else None, "path": c.path, "has_effect": c.effect_json is not None,
+    }
+
+
+def list_claims(session: Session, kind: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+    """``[{id, kind, slug, title, status, date, path, has_effect}]`` (UI.md Part 1),
+    filtered on ``kind`` / ``status`` when given. An unknown ``kind`` or ``status``
+    raises ``ValueError`` (-> 400), validated against the closed enums (PLATFORM.md §4.3, §6)."""
+    stmt = select(Claim).order_by(Claim.id)
+    if kind is not None:
+        stmt = stmt.where(Claim.kind == _claim_kind_or_400(kind))
+    if status is not None:
+        stmt = stmt.where(Claim.status == _claim_status_or_400(status))
+    return [claim_summary(c) for c in session.scalars(stmt).all()]
+
+
+def _effect_out(effect_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not effect_json:
+        return None
+    return {
+        "category_code": effect_json.get("category"), "year": effect_json.get("year"),
+        "value": effect_json.get("value"), "unit": effect_json.get("unit"),
+    }
+
+
+def claim_detail(session: Session, claim_id: int) -> dict[str, Any]:
+    """One claim plus its evidence (file order), reversal condition, quantified effect and
+    outgoing links (UI.md Part 1). 404 (``LookupError``) when the claim does not exist."""
+    claim = session.get(Claim, claim_id)
+    if claim is None:
+        raise LookupError(f"claim {claim_id} not found")
+    evidence = session.scalars(
+        select(Evidence).where(Evidence.claim_id == claim_id).order_by(Evidence.id)
+    ).all()
+    links = session.scalars(
+        select(ClaimLink).where(ClaimLink.from_claim_id == claim_id).order_by(ClaimLink.id)
+    ).all()
+    others = {l.to_claim_id: session.get(Claim, l.to_claim_id) for l in links}
+    return {
+        **claim_summary(claim),
+        "evidence": [
+            {"section": e.section.value, "text": e.text, "tag_kind": e.tag_kind.value, "tag_raw": e.tag_raw,
+             "target_path": e.target_path, "resolved": e.resolved}
+            for e in evidence
+        ],
+        "reversal_condition": claim.reversal_condition,
+        "effect": _effect_out(claim.effect_json),
+        "links": [
+            {"relation": l.relation.value, "other_slug": others[l.to_claim_id].slug if others.get(l.to_claim_id) else None}
+            for l in links
+        ],
+    }
+
+
+def decided_effects_list(session: Session) -> list[dict[str, Any]]:
+    """``GET /brain/effects`` (UI.md Part 1): every decided decision's quantified effect,
+    reusing ``bridge.effects.decided_effects`` rather than re-deriving the same query."""
+    return [
+        {
+            "claim_id": e.claim_id, "decision_slug": e.decision_slug, "decision_title": e.decision_title,
+            "category_code": e.category_code, "year": e.year, "value": e.value, "unit": e.unit,
+            "decided_on": e.decided_on.isoformat() if e.decided_on else None,
+        }
+        for e in _decided_effects(session)
+    ]
+
+
+def claim_impact(session: Session, claim_id: int) -> list[dict[str, Any]]:
+    """The reverse of the trace (UI.md Part 1): which plan values this claim drove, newest
+    scenario first, plus the default value each one displaced when the derivation recorded
+    one. Reads the derivation ``run_plan`` already writes for a claim-sourced override
+    (``inputs_json["default_value"]`` - see ``nvplan.services.planning.run_plan``'s
+    docstring) rather than re-deriving trace logic. Empty list, never 404, when the claim
+    drove nothing - only a missing claim itself is a 404."""
+    claim = session.get(Claim, claim_id)
+    if claim is None:
+        raise LookupError(f"claim {claim_id} not found")
+    cats_by_id = {c.id: c for c in category_map(session).values()}
+    rows = session.scalars(select(PlanValue).where(PlanValue.claim_id == claim_id)).all()
+    rows = sorted(rows, key=lambda pv: (-pv.scenario_id, pv.year))
+    out: list[dict[str, Any]] = []
+    for pv in rows:
+        scen = session.get(Scenario, pv.scenario_id)
+        cat = cats_by_id.get(pv.category_id)
+        d = session.get(Derivation, pv.derivation_id)
+        displaced = (d.inputs_json or {}).get("default_value") if d is not None else None
+        out.append({
+            "plan_value_id": pv.id,
+            "scenario_kind": scen.kind.value if scen is not None else None,
+            "category_code": cat.code if cat is not None else None,
+            "year": pv.year,
+            "value": pv.value,
+            "path": pv.path.value,
+            "displaced_default": float(displaced) if displaced is not None else None,
+        })
+    return out
