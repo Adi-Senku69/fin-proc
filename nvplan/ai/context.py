@@ -50,7 +50,22 @@ from nvplan import config
 
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 SKILLS_SOURCE = "/skills/"
-SKILL_NAMES: tuple[str, ...] = ("env-scan-54-positions", "revenue-proposal-method", "deviation-explanation-method")
+#: Every skill directory under ``skills/``. Production loads the whole directory via
+#: ``SKILLS_SOURCE``; this tuple is the manifest tests check the tree against, so a skill
+#: added on disk without being named here is caught rather than silently shipped.
+SKILL_NAMES: tuple[str, ...] = (
+    # the three AI touchpoints
+    "env-scan-54-positions",
+    "revenue-proposal-method",
+    "deviation-explanation-method",
+    # the strategy and positioning cluster (PLATFORM.md P3)
+    "strategy-lean-canvas",
+    "strategy-monetization",
+    "strategy-porters-five-forces",
+    "strategy-positioning",
+    "strategy-product-vision",
+    "strategy-swot",
+)
 
 READ_ONLY_FS_TOOLS: list[str] = ["read_file", "ls", "grep"]
 
