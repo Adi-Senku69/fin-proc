@@ -12,8 +12,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from bridge.db import init_platform_db
+from nvplan import config
 from nvplan.ai import AnswerRejected, ask, loose_figures
-from nvplan.ai.fake import scripted_assistant_model
+from nvplan.ai.assistant import Failure, correction_message
+from nvplan.ai.fake import FakeToolCallingModel, ai_calls, scripted_assistant_model, structured, tool_call
 from nvplan.api.app import create_app
 from nvplan.db.models import AiRecord, PlanValue, Touchpoint
 from nvplan.db.session import category_map, get_engine, init_db
@@ -470,6 +472,256 @@ def test_every_new_tool_returns_the_id_needed_to_cite_it(assistant_db):
 
     backtest = json.loads(tools["get_backtest_summary"].invoke({}))
     assert "error" in backtest or "summary" in backtest  # context-only; no id expected
+
+
+# --------------------------------------------------------------------------- the correction loop
+#
+# A verification failure is no longer a dead end (ask() gives the model config.ASSISTANT_MAX_ATTEMPTS
+# total tries, feeding correction_message(failures) back as the next attempt's prompt). Every test
+# here is offline against the scripted fake model - see nvplan.ai.fake's module doc for why
+# FakeMessagesListChatModel.responses cycles in call order across separate agent.invoke() calls on
+# the SAME instance: that is what lets _two_attempt_model script "answers badly once, then well"
+# without touching nvplan/ai/fake.py (out of scope for this change - the existing exported helpers
+# (FakeToolCallingModel, ai_calls, tool_call, structured) are already enough to compose it).
+
+
+def _two_attempt_model(
+    *,
+    first_segments,
+    second_segments,
+    first_proposal=None,
+    second_proposal=None,
+    first_usage=None,
+    second_usage=None,
+):
+    """A fake model that answers badly once, then well - one ``get_plan_values`` tool-call turn
+    (as ``scripted_assistant_model`` also scripts) followed by the structured ``AssistantAnswer``
+    turn, twice in a row. ``*_usage`` sets ``usage_metadata`` on that attempt's structured turn
+    only (never the tool-call turn), so a test can compute the expected summed total by hand."""
+    payload1 = {"segments": first_segments, "proposal": first_proposal, "ai_record_id": -1, "usage": {}}
+    payload2 = {"segments": second_segments, "proposal": second_proposal, "ai_record_id": -1, "usage": {}}
+    turn1 = structured("AssistantAnswer", payload1)
+    turn2 = structured("AssistantAnswer", payload2)
+    if first_usage is not None:
+        turn1.usage_metadata = first_usage
+    if second_usage is not None:
+        turn2.usage_metadata = second_usage
+    return FakeToolCallingModel(
+        responses=[
+            ai_calls(tool_call("get_plan_values", {"scenario_kind": "base"}, "pv1")),
+            turn1,
+            ai_calls(tool_call("get_plan_values", {"scenario_kind": "base"}, "pv2")),
+            turn2,
+        ]
+    )
+
+
+def test_correction_loop_fixes_loose_figure_on_second_attempt_and_persists_one_record(assistant_db):
+    factory, plans, ids = assistant_db
+    bad = [{"type": "text", "text": "Margin improved by 12.5% year over year."}]
+    good = [
+        {
+            "type": "figure",
+            "label": "Revenue plan",
+            "value": ids["plan_value_value"],
+            "unit": "k EUR",
+            "ref": {"kind": "plan_value", "id": ids["plan_value_id"]},
+        }
+    ]
+    model = _two_attempt_model(first_segments=bad, second_segments=good)
+
+    answer = ask(factory, "how is margin?", model=model)
+
+    assert answer.attempts == 2
+    recs = _records(factory)
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec.call_log_json is not None
+    assert len(rec.call_log_json) == 4  # 2 model calls per attempt x 2 attempts - every attempt logged
+    assert "attempt 1 correction sent" in rec.response_text
+    assert "12.5%" in rec.response_text  # the fed-back correction names the offending token
+
+
+def test_dangling_ref_correction_names_the_right_tool_and_then_succeeds(assistant_db):
+    factory, plans, ids = assistant_db
+    bad = [{"type": "figure", "label": "Ghost", "value": 1.0, "unit": "k EUR", "ref": {"kind": "plan_value", "id": 999999}}]
+    good = [
+        {
+            "type": "figure",
+            "label": "Revenue plan",
+            "value": ids["plan_value_value"],
+            "unit": "k EUR",
+            "ref": {"kind": "plan_value", "id": ids["plan_value_id"]},
+        }
+    ]
+    model = _two_attempt_model(first_segments=bad, second_segments=good)
+
+    answer = ask(factory, "what is revenue?", model=model)
+
+    assert answer.attempts == 2
+    rec = _records(factory)[0]
+    assert "get_plan_value or get_plan_values" in rec.response_text
+    assert "999999" in rec.response_text
+
+
+@pytest.mark.parametrize(
+    "ref_kind,expected_tool",
+    [
+        ("plan_value", "get_plan_value or get_plan_values"),
+        ("parameter", "get_parameters"),
+        ("derivation", "get_trace"),
+        ("claim", "get_decisions or get_decision"),
+    ],
+)
+def test_correction_message_names_the_tool_for_each_ref_kind(ref_kind, expected_tool):
+    failure = Failure(kind="dangling_ref", text="x", segment=0, ref_kind=ref_kind, ref_id=42)
+    msg = correction_message([failure])
+    assert expected_tool in msg
+    assert f"{ref_kind}:42" in msg
+    assert "cite the id it returns instead of this one" in msg
+
+
+def test_correction_message_loose_figure_quotes_the_token_and_names_the_rule():
+    failure = Failure(kind="loose_figure", text="x", segment=0, tokens=("12.5%",))
+    msg = correction_message([failure])
+    assert "'12.5%'" in msg
+    assert "figure" in msg and "word" in msg
+    assert "backstop rule" in msg
+
+
+def test_correction_message_value_mismatch_gives_both_values_and_says_re_read():
+    failure = Failure(
+        kind="value_mismatch", text="x", segment=1, ref_kind="plan_value", ref_id=7, asserted=105.0, stored=100.0
+    )
+    msg = correction_message([failure])
+    assert "105.0" in msg
+    assert "100.0" in msg
+    assert "re-read the row" in msg
+    assert "do not adjust your own number" in msg
+
+
+def test_correction_message_value_mismatch_parameter_candidates_lists_them():
+    failure = Failure(
+        kind="value_mismatch",
+        text="x",
+        segment=1,
+        ref_kind="parameter",
+        ref_id=7,
+        asserted=0.5,
+        stored=[0.1, 0.2, 0.97, 0.02],
+    )
+    msg = correction_message([failure])
+    assert "[0.1, 0.2, 0.97, 0.02]" in msg
+
+
+def test_correction_message_bad_claim_points_at_get_decisions():
+    failure = Failure(kind="bad_claim", text="x", segment=2, claim_id=424242)
+    msg = correction_message([failure])
+    assert "424242" in msg
+    assert "get_decisions" in msg
+
+
+def test_correction_message_unrecorded_proposal_names_the_tool():
+    failure = Failure(kind="unrecorded_proposal", text="x")
+    msg = correction_message([failure])
+    assert "record_revenue_proposal" in msg
+
+
+def test_correction_message_terse_one_line_per_failure():
+    """An instruction, not an essay: exactly one line per failure plus the one-line header."""
+    failures = [
+        Failure(kind="loose_figure", text="x", segment=0, tokens=("500",)),
+        Failure(kind="bad_claim", text="y", segment=1, claim_id=1),
+    ]
+    msg = correction_message(failures)
+    assert len(msg.splitlines()) == 3
+
+
+def test_usage_sums_across_both_attempts(assistant_db):
+    factory, plans, ids = assistant_db
+    bad = [{"type": "text", "text": "Margin improved by 12.5% year over year."}]
+    good = [
+        {
+            "type": "figure",
+            "label": "Revenue plan",
+            "value": ids["plan_value_value"],
+            "unit": "k EUR",
+            "ref": {"kind": "plan_value", "id": ids["plan_value_id"]},
+        }
+    ]
+    usage1 = {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
+    usage2 = {"input_tokens": 50, "output_tokens": 10, "total_tokens": 60}
+    model = _two_attempt_model(first_segments=bad, second_segments=good, first_usage=usage1, second_usage=usage2)
+
+    answer = ask(factory, "how is margin?", model=model)
+
+    assert answer.attempts == 2
+    assert answer.usage == {"input_tokens": 150, "output_tokens": 30, "total_tokens": 180}
+
+    # Cross-check against the persisted call log (the compliance artefact), not just the
+    # returned total, so the accumulation is verified rather than assumed.
+    from nvplan.ai.audit import total_usage
+
+    rec = _records(factory)[0]
+    assert total_usage(rec.call_log_json) == answer.usage
+    logged_usages = [entry["usage"] for entry in rec.call_log_json if entry.get("usage")]
+    assert logged_usages == [usage1, usage2]  # one per attempt's structured turn, in order
+
+
+def test_exhausting_attempts_raises_with_final_attempts_failures_and_persists_nothing(assistant_db, monkeypatch):
+    factory, plans, ids = assistant_db
+    monkeypatch.setattr(config, "ASSISTANT_MAX_ATTEMPTS", 2)
+    first_bad = [{"type": "text", "text": "Margin improved by 12.5% year over year."}]
+    second_bad = [
+        {"type": "figure", "label": "Ghost", "value": 1.0, "unit": "k EUR", "ref": {"kind": "plan_value", "id": 999999}}
+    ]
+    model = _two_attempt_model(first_segments=first_bad, second_segments=second_bad)
+
+    with pytest.raises(AnswerRejected) as excinfo:
+        ask(factory, "how is margin?", model=model)
+
+    message = str(excinfo.value)
+    assert "does not resolve" in message  # the SECOND (final) attempt's failure
+    assert "12.5%" not in message  # NOT the first attempt's failure - it was corrected away
+    assert _records(factory) == []
+
+
+def test_correct_first_time_has_attempts_one_and_makes_no_extra_call(assistant_db):
+    factory, plans, ids = assistant_db
+    segments = [
+        {
+            "type": "figure",
+            "label": "Revenue plan",
+            "value": ids["plan_value_value"],
+            "unit": "k EUR",
+            "ref": {"kind": "plan_value", "id": ids["plan_value_id"]},
+        }
+    ]
+    model = scripted_assistant_model(segments=segments)  # only ONE turn scripted - a retry would fail loudly
+
+    answer = ask(factory, "what is revenue?", model=model)
+
+    assert answer.attempts == 1
+    rec = _records(factory)[0]
+    assert len(rec.call_log_json) == 2  # exactly one attempt's worth of model calls, no retry
+    assert "---ATTEMPTS---" not in rec.response_text
+
+
+def test_attempt_limit_of_one_restores_immediate_rejection(assistant_db, monkeypatch):
+    """config.ASSISTANT_MAX_ATTEMPTS=1 is today's pre-correction-loop behaviour exactly: the
+    first failure raises immediately, with no correction round and nothing persisted."""
+    factory, plans, ids = assistant_db
+    monkeypatch.setattr(config, "ASSISTANT_MAX_ATTEMPTS", 1)
+    segments = [{"type": "text", "text": "Costs came in around €1,245.7 k this year, well above plan."}]
+    model = scripted_assistant_model(segments=segments)  # only ONE turn scripted
+
+    with pytest.raises(AnswerRejected, match=r"1,245\.7"):
+        ask(factory, "how are costs?", model=model)
+    assert _records(factory) == []
+
+
+def test_assistant_max_attempts_default_is_three():
+    assert config.ASSISTANT_MAX_ATTEMPTS == 3
 
 
 # --------------------------------------------------------------------------- endpoint

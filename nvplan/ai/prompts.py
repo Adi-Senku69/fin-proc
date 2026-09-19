@@ -171,6 +171,26 @@ def render_assistant_ask(**ctx: object) -> str:
     return ASSISTANT_ASK_USER.format(**ctx)
 
 
+# The correction round of the loop (UI.md Part 3, turned from a dead end into a loop): sent
+# instead of ASSISTANT_ASK_USER when the previous attempt's answer was rejected. Restates the
+# question (a fresh turn carries no prior conversation) plus the model's own
+# ``correction_message`` - concrete instructions, not a restatement of the error - so the model
+# can act on it without having to guess what "fix it" means.
+ASSISTANT_CORRECTION_USER = """\
+Question: {question}
+
+Scenario for this question, when one is relevant (best/base/worst): {scenario_kind}.
+
+{correction}
+
+Answer the question again, in full, using the tools; every figure must carry the id the tool
+returned for it. If you cannot source a number, say so in prose instead of stating it."""
+
+
+def render_assistant_correction(**ctx: object) -> str:
+    return ASSISTANT_CORRECTION_USER.format(**ctx)
+
+
 # --------------------------------------------------------------------------- advisor (orchestrator)
 
 ADVISOR_SYSTEM = f"""\

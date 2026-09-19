@@ -15,6 +15,19 @@ prose instead of a citation (part 2). Verification runs entirely offline (no mod
 *before* anything is persisted - exactly the discipline ``run_deviation_explanation`` already
 applies to ``ExplanationRejected``.
 
+The correction loop
+--------------------
+A verification failure is no longer a dead end. :func:`collect_failures` turns every problem
+into a structured :class:`Failure`; :func:`correction_message` turns those into concrete,
+per-kind instructions (never a restatement of the error - see its own docstring); :func:`ask`
+feeds that back as a fresh turn and gives the model up to ``config.ASSISTANT_MAX_ATTEMPTS``
+total attempts (default 3) before :class:`AnswerRejected` propagates with the *final* attempt's
+failures, exactly as a single-attempt run does today. One shared ``AiRunContext`` spans every
+attempt of one ``ask()`` call, so ``ctx.call_log``/``ctx.total_usage`` (maintained by
+``ContextAuditMiddleware``, bound once at agent build time) accumulate over every attempt's
+model call(s), not just the last - a retry is a real, billed call and the persisted record's
+usage and call log say so.
+
 Touchpoint
 ----------
 ``nvplan.db.models.Touchpoint`` carries its own ``assistant`` member for exactly this module's
@@ -36,7 +49,8 @@ context stack, same audit, same refusal handling as the three formal touchpoints
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any, Literal, Union
+from dataclasses import dataclass
+from typing import Annotated, Any, Literal, Sequence, Union
 
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
@@ -54,6 +68,7 @@ __all__ = [
     "AnswerRejected",
     "AssistantAnswer",
     "ClaimSegment",
+    "Failure",
     "FigureRef",
     "FigureSegment",
     "Proposal",
@@ -61,6 +76,8 @@ __all__ = [
     "TextSegment",
     "ask",
     "build_assistant_agent",
+    "collect_failures",
+    "correction_message",
     "loose_figures",
     "verify_answer",
 ]
@@ -139,11 +156,32 @@ class AssistantAnswer(BaseModel):
     proposal: Proposal | None = None
     ai_record_id: int = Field(default=-1, description="set by ask() after the answer verifies and persists")
     usage: dict[str, int] = Field(default_factory=dict, description="real token usage; set by ask()")
+    attempts: int = Field(
+        default=1, description="how many attempts ask() needed before this answer verified; 1 = correct first time"
+    )
 
 
 class AnswerRejected(ValueError):
     """The assistant's answer cited a figure it could not source, or left a loose number in
     prose; nothing was persisted (same discipline as ``ExplanationRejected``)."""
+
+
+@dataclass(frozen=True)
+class Failure:
+    """One verification problem, structured enough for :func:`correction_message` to name a
+    concrete next step - ``text`` alone (the same wording ``verify_answer`` raised before the
+    correction loop existed) is what :class:`AnswerRejected`'s message is built from; every
+    other field exists only so the correction loop doesn't have to re-parse ``text``."""
+
+    kind: Literal["loose_figure", "dangling_ref", "value_mismatch", "bad_claim", "unrecorded_proposal"]
+    text: str
+    segment: int | None = None
+    ref_kind: str | None = None
+    ref_id: int | None = None
+    tokens: tuple[str, ...] = ()
+    asserted: float | None = None
+    stored: float | list[float] | None = None
+    claim_id: int | None = None
 
 
 # --------------------------------------------------------------------------- part 1: figure / claim refs
@@ -188,25 +226,63 @@ def _resolve_figure_ref(session: Session, kind: str, ref_id: int) -> tuple[bool,
     return False, None, None
 
 
-def _check_figure(session: Session, index: int, seg: FigureSegment, abs_tol: float) -> list[str]:
+def _check_figure(session: Session, index: int, seg: FigureSegment, abs_tol: float) -> list[Failure]:
     found, value, candidates = _resolve_figure_ref(session, seg.ref.kind, seg.ref.id)
     where = f"segment {index} (figure {seg.label!r}, ref {seg.ref.kind}:{seg.ref.id})"
     if not found:
-        return [f"{where}: does not resolve to a real row"]
+        return [
+            Failure(
+                kind="dangling_ref",
+                text=f"{where}: does not resolve to a real row",
+                segment=index,
+                ref_kind=seg.ref.kind,
+                ref_id=seg.ref.id,
+            )
+        ]
     if candidates is not None:
         if not any(c is not None and abs(seg.value - c) <= abs_tol for c in candidates):
-            return [f"{where}: value {seg.value} matches none of the parameter's fields {candidates} within {abs_tol}"]
+            return [
+                Failure(
+                    kind="value_mismatch",
+                    text=f"{where}: value {seg.value} matches none of the parameter's fields {candidates} within {abs_tol}",
+                    segment=index,
+                    ref_kind=seg.ref.kind,
+                    ref_id=seg.ref.id,
+                    asserted=seg.value,
+                    stored=[c for c in candidates if c is not None],
+                )
+            ]
         return []
     if value is None or abs(seg.value - value) > abs_tol:
-        return [f"{where}: value {seg.value} vs stored {value}"]
+        return [
+            Failure(
+                kind="value_mismatch",
+                text=f"{where}: value {seg.value} vs stored {value}",
+                segment=index,
+                ref_kind=seg.ref.kind,
+                ref_id=seg.ref.id,
+                asserted=seg.value,
+                stored=value,
+            )
+        ]
     return []
 
 
-def _check_claim_segment(session: Session, index: int, seg: ClaimSegment) -> list[str]:
+def _check_claim_segment(session: Session, index: int, seg: ClaimSegment) -> list[Failure]:
+    def _unavailable(e: Exception) -> list[Failure]:
+        return [
+            Failure(
+                kind="bad_claim",
+                text=f"segment {index} (claim {seg.claim_id}): brain tables not available: {e}",
+                segment=index,
+                claim_id=seg.claim_id,
+            )
+        ]
+
     try:
         from provenance import Claim
     except Exception as e:  # noqa: BLE001
-        return [f"segment {index} (claim {seg.claim_id}): brain tables not available: {e}"]
+        return _unavailable(e)
     try:
         row = session.get(Claim, seg.claim_id)
     except Exception as e:  # noqa: BLE001 - finance-only database, no claim table
@@ -214,9 +290,16 @@ def _check_claim_segment(session: Session, index: int, seg: ClaimSegment) -> lis
             session.rollback()
         except Exception:  # noqa: BLE001
             pass
-        return [f"segment {index} (claim {seg.claim_id}): brain tables not available: {e}"]
+        return _unavailable(e)
     if row is None:
-        return [f"segment {index}: claim {seg.claim_id} does not exist"]
+        return [
+            Failure(
+                kind="bad_claim",
+                text=f"segment {index}: claim {seg.claim_id} does not exist",
+                segment=index,
+                claim_id=seg.claim_id,
+            )
+        ]
     return []
 
 
@@ -402,41 +485,112 @@ def loose_figures(text: str) -> list[str]:
     return [token for _, token in found]
 
 
-def _check_text(index: int, seg: TextSegment) -> list[str]:
+def _check_text(index: int, seg: TextSegment) -> list[Failure]:
     offenders = loose_figures(seg.text)
     if not offenders:
         return []
     return [
-        f"segment {index} (text): loose, uncited figure(s) {offenders!r} in prose "
-        f"{seg.text[:160]!r} - state figures only as a `figure` segment"
+        Failure(
+            kind="loose_figure",
+            text=(
+                f"segment {index} (text): loose, uncited figure(s) {offenders!r} in prose "
+                f"{seg.text[:160]!r} - state figures only as a `figure` segment"
+            ),
+            segment=index,
+            tokens=tuple(offenders),
+        )
     ]
 
 
 # --------------------------------------------------------------------------- verification entrypoint
 
 
-def verify_answer(answer: AssistantAnswer, session: Session, *, abs_tol: float = 0.05) -> None:
-    """UI.md Part 3's verification, run before anything is returned or persisted.
+def collect_failures(answer: AssistantAnswer, session: Session, *, abs_tol: float = 0.05) -> list[Failure]:
+    """UI.md Part 3's verification, run before anything is returned or persisted - every problem,
+    structured (see :class:`Failure`), not just raised:
 
     1. Every ``figure`` segment's ``ref`` resolves to a real row and its ``value`` matches that
        row within ``abs_tol``.
     2. Every ``claim`` segment's ``claim_id`` exists.
     3. The backstop scan: no ``text`` segment carries a loose (uncited) number.
 
-    Raises :class:`AnswerRejected` listing every failure; returns ``None`` when the answer is
-    clean."""
-    problems: list[str] = []
+    This is the shared source both :func:`verify_answer`'s rejection and the correction loop's
+    :func:`correction_message` are built from; empty when the answer is clean."""
+    failures: list[Failure] = []
     for i, seg in enumerate(answer.segments):
         if isinstance(seg, FigureSegment):
-            problems.extend(_check_figure(session, i, seg, abs_tol))
+            failures.extend(_check_figure(session, i, seg, abs_tol))
         elif isinstance(seg, ClaimSegment):
-            problems.extend(_check_claim_segment(session, i, seg))
+            failures.extend(_check_claim_segment(session, i, seg))
         elif isinstance(seg, TextSegment):
-            problems.extend(_check_text(i, seg))
-    if problems:
-        raise AnswerRejected(
-            f"assistant answer rejected ({len(problems)} unsourced figure(s)): " + "; ".join(problems)
-        )
+            failures.extend(_check_text(i, seg))
+    return failures
+
+
+def _rejection_message(failures: Sequence[Failure]) -> str:
+    return f"assistant answer rejected ({len(failures)} problem(s)): " + "; ".join(f.text for f in failures)
+
+
+def verify_answer(answer: AssistantAnswer, session: Session, *, abs_tol: float = 0.05) -> None:
+    """Raises :class:`AnswerRejected` listing every failure (see :func:`collect_failures` for
+    what is checked); returns ``None`` when the answer is clean."""
+    failures = collect_failures(answer, session, abs_tol=abs_tol)
+    if failures:
+        raise AnswerRejected(_rejection_message(failures))
+
+
+# --------------------------------------------------------------------------- the correction loop
+
+
+# The tool that returns a citable id for each ref kind (UI.md Part 3's own citation table,
+# repeated here for the correction message rather than assuming the model remembers it).
+_REF_TOOL: dict[str, str] = {
+    "plan_value": "get_plan_value or get_plan_values",
+    "parameter": "get_parameters",
+    "derivation": "get_trace",
+    "claim": "get_decisions or get_decision",
+}
+
+
+def correction_message(failures: Sequence[Failure]) -> str:
+    """Turn verification failures into what to do next - never a restatement of the error. Pure
+    and model-free (no session, no tool call), so it is unit-testable on its own; ``ask()`` feeds
+    the result back as the next attempt's prompt. Terse: one instruction per failure, not an
+    essay."""
+    lines = ["Your last answer was rejected. Fix every problem below, then answer again:"]
+    for f in failures:
+        if f.kind == "loose_figure":
+            tokens = ", ".join(repr(t) for t in f.tokens)
+            lines.append(
+                f"- loose figure(s) {tokens} in segment {f.segment}: prose may carry no digit except "
+                "a year in window/horizon or a recognised identifier (the backstop rule) - cite it as "
+                "a `figure` segment carrying the id the tool returned for it, or write it out as a "
+                "word instead."
+            )
+        elif f.kind == "dangling_ref":
+            tool = _REF_TOOL.get(f.ref_kind or "", "the matching read tool")
+            lines.append(
+                f"- ref {f.ref_kind}:{f.ref_id} in segment {f.segment} was not found: call {tool} and "
+                "cite the id it returns instead of this one."
+            )
+        elif f.kind == "value_mismatch":
+            stored = f"one of {f.stored}" if isinstance(f.stored, list) else f"{f.stored}"
+            lines.append(
+                f"- value {f.asserted} in segment {f.segment} disagrees with the stored value ({stored}) "
+                f"for ref {f.ref_kind}:{f.ref_id}: re-read the row and cite the stored value - do not "
+                "adjust your own number to make it fit."
+            )
+        elif f.kind == "bad_claim":
+            lines.append(
+                f"- claim {f.claim_id} in segment {f.segment} does not exist: call get_decisions and "
+                "cite a claim_id it actually returns."
+            )
+        elif f.kind == "unrecorded_proposal":
+            lines.append(
+                "- the `proposal` you returned was never recorded: call record_revenue_proposal first, "
+                "then base the proposal fields on what it returns, not on a number you invented."
+            )
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- agent construction
@@ -478,6 +632,30 @@ def build_assistant_agent(
 # --------------------------------------------------------------------------- entrypoint
 
 
+def _proposal_failure(draft: AssistantAnswer, proposal_record_id: int | None) -> Failure | None:
+    """The model asserted a proposal card without recording it through the write tool - the
+    only sanctioned way to create one (UI.md Part 3: "Nothing may write except the existing
+    proposal path"). Treated exactly like any other unsourced figure."""
+    if draft.proposal is not None and proposal_record_id is None:
+        return Failure(
+            kind="unrecorded_proposal",
+            text=(
+                "a `proposal` was returned without recording it via record_revenue_proposal; "
+                "nothing was persisted for it"
+            ),
+        )
+    return None
+
+
+def _attempt_failures(draft: AssistantAnswer, proposal_record_id: int | None, session: Session) -> list[Failure]:
+    failures: list[Failure] = []
+    pf = _proposal_failure(draft, proposal_record_id)
+    if pf is not None:
+        failures.append(pf)
+    failures.extend(collect_failures(draft, session))
+    return failures
+
+
 def ask(
     session_factory: SessionFactory,
     question: str,
@@ -486,45 +664,69 @@ def ask(
     model: str | BaseChatModel | None = None,
     policy: ContextPolicy | None = None,
 ) -> AssistantAnswer:
-    """``POST /assistant/ask``'s implementation. Builds the agent, invokes it, verifies the
-    structured answer against the database *before* persisting anything, then persists one
-    ``ai_record`` (touchpoint reused, see module doc) with the literal prompt/response and the
-    per-call audit log. On rejection, discards whatever the proposal tool wrote mid-run (the
-    same discipline ``run_deviation_explanation`` applies to ``ExplanationRejected``) and
-    re-raises; no ``ai_record`` exists for a rejected answer."""
+    """``POST /assistant/ask``'s implementation. Builds the agent once, then gives it up to
+    ``config.ASSISTANT_MAX_ATTEMPTS`` attempts (the correction loop, see module doc): each
+    attempt is verified against the database *before* anything is persisted, and a failure is
+    fed back as :func:`correction_message` for the next attempt rather than failing outright.
+    Only once the *last* attempt still fails does :class:`AnswerRejected` propagate (with that
+    attempt's failures) and whatever the proposal tool wrote mid-run gets discarded - the same
+    discipline ``run_deviation_explanation`` applies to ``ExplanationRejected``, now amortized
+    over every attempt instead of just the first. On success, ``draft.attempts`` says how many
+    tries it took and ``draft.usage`` is the real usage summed over *all* of them (one shared
+    ``AiRunContext``, so ``ContextAuditMiddleware`` - bound once at agent-build time - keeps
+    appending to the same ``call_log``/``total_usage`` across every attempt)."""
     chat = agents.get_model(model)
     ctx = AiRunContext(touchpoint=ASSISTANT_TOUCHPOINT, model_version=agents.model_version(chat))
     user_prompt = prompts.render_assistant_ask(question=question, scenario_kind=scenario_kind)
     ctx.prompt_text = agents._prompt_text(prompts.ASSISTANT_ASK_SYSTEM, user_prompt)
 
     agent = build_assistant_agent(model=chat, session_factory=session_factory, extra_context=ctx, policy=policy)
-    result, capture = agents._invoke(agent, user_prompt, session_factory=session_factory, ctx=ctx)
-    draft: AssistantAnswer = result["structured_response"]
 
-    proposal_record_id = ctx.ai_record_id  # set by record_revenue_proposal, if the model called it
-    try:
-        if draft.proposal is not None and proposal_record_id is None:
-            # The model asserted a proposal card without recording it through the write tool -
-            # the only sanctioned way to create one (UI.md Part 3: "Nothing may write except
-            # the existing proposal path"). Treat it exactly like any other unsourced figure.
-            raise AnswerRejected(
-                "assistant answer rejected (1 unsourced proposal): a `proposal` was returned "
-                "without recording it via record_revenue_proposal; nothing was persisted"
-            )
+    max_attempts = max(1, config.ASSISTANT_MAX_ATTEMPTS)
+    prompt_for_attempt = user_prompt
+    corrections_sent: list[str] = []
+    attempt = 0
+    draft: AssistantAnswer
+    result: dict[str, Any]
+    capture: agents.PromptCapture
+
+    while True:
+        attempt += 1
+        result, capture = agents._invoke(agent, prompt_for_attempt, session_factory=session_factory, ctx=ctx)
+        draft = result["structured_response"]
+
+        proposal_record_id = ctx.ai_record_id  # set by record_revenue_proposal, if called this run
         with session_factory() as s:
-            verify_answer(draft, s)
-    except AnswerRejected:
-        agents._discard_partial_writes(session_factory, ctx)
-        raise
+            failures = _attempt_failures(draft, proposal_record_id, s)
 
+        if not failures:
+            break
+        if attempt >= max_attempts:
+            agents._discard_partial_writes(session_factory, ctx)
+            raise AnswerRejected(_rejection_message(failures))
+
+        correction = correction_message(failures)
+        corrections_sent.append(correction)
+        prompt_for_attempt = prompts.render_assistant_correction(
+            question=question, scenario_kind=scenario_kind, correction=correction
+        )
+
+    proposal_record_id = ctx.ai_record_id
     if draft.proposal is not None and proposal_record_id is not None:
         draft.proposal.ai_record_id = proposal_record_id
+
+    response_text = agents._response_text(result["messages"], draft)
+    if attempt > 1:
+        # Make the correction visible in the persisted record itself, not only in call_log_json's
+        # per-call detail (UI.md Part 3: "a reader must be able to see the model was corrected").
+        trail = "\n".join(f"attempt {i + 1} correction sent: {msg}" for i, msg in enumerate(corrections_sent))
+        response_text += f"\n\n---ATTEMPTS---\nattempts: {attempt}\n{trail}"
 
     with session_factory() as s:
         rec = AiRecord(
             touchpoint=ASSISTANT_TOUCHPOINT,
             prompt_text=agents._prompt_text(agents._system_as_sent(capture, prompts.ASSISTANT_ASK_SYSTEM), user_prompt),
-            response_text=agents._response_text(result["messages"], draft),
+            response_text=response_text,
             rationale=question.strip()[:500],
             model_version=ctx.model_version,
             status=AiStatus.proposed,
@@ -536,4 +738,5 @@ def ask(
         draft.ai_record_id = rec.id
 
     draft.usage = dict(ctx.total_usage)
+    draft.attempts = attempt
     return draft

@@ -56,7 +56,7 @@ def _env(name: str) -> str | None:
     return raw.strip() if raw and raw.strip() else None
 
 
-def _env_int(name: str, default: int) -> int:
+def _env_int(name: str, default: int, *, label: str = "tokens") -> int:
     raw = _env(name)
     if raw is None:
         return default
@@ -65,7 +65,7 @@ def _env_int(name: str, default: int) -> int:
     except ValueError as exc:
         raise ValueError(f"{name}={raw!r} is not an integer") from exc
     if value <= 0:
-        raise ValueError(f"{name}={raw!r} must be a positive number of tokens")
+        raise ValueError(f"{name}={raw!r} must be a positive number of {label}")
     return value
 
 
@@ -166,6 +166,13 @@ AI_MAX_TOKENS = _env_int("NVPLAN_AI_MAX_TOKENS", 16_000)
 # Escape hatch for Anthropic beta flags (comma-separated), e.g. NVPLAN_AI_BETAS=fast-mode-2026-02-01.
 # Empty by default: nothing in this PoC needs a beta.
 AI_BETAS: list[str] = _env_list("NVPLAN_AI_BETAS")
+
+# Total attempts nvplan.ai.assistant.ask() gives the model before AnswerRejected propagates
+# (UI.md Part 3's correction loop): 1 = today's behaviour, no correction; the default of 3 gives
+# the model two chances to correct itself after a verification failure, fed back via
+# nvplan.ai.assistant.correction_message. _env_int already rejects anything <= 0, so this is
+# validated to at least 1.
+ASSISTANT_MAX_ATTEMPTS = _env_int("NVPLAN_ASSISTANT_MAX_ATTEMPTS", 3, label="attempts")
 
 # Context-window policy defaults for the AI layer (see nvplan/ai/context.py).
 # Approximate tokens (count_tokens_approximately: chars/4 + 3 per message), not model-exact.
