@@ -5,11 +5,12 @@ prompt viewer, backtest report - exposed as JSON for a UI to render).
 factory lives on ``app.state.session_factory``. AI routes take their chat model
 from ``app.state.model_factory`` (``callable(touchpoint, context) -> BaseChatModel``;
 tests inject scripted fakes). When it is ``None`` the real model
-(``nvplan.ai.get_model`` -> ``ChatAnthropic(config.AI_MODEL)``) is used, which needs
-``ANTHROPIC_API_KEY``; without either the AI routes answer 503.
+(``nvplan.ai.get_model`` -> ``ChatAnthropic(config.AI_MODEL)``) is used, which needs an
+Anthropic credential (``ANTHROPIC_API_KEY`` in ``.env`` or the environment); without either the
+AI routes answer 503 with ``nvplan.ai.credential_hint()`` as the detail.
 
 Error mapping: LookupError -> 404, GateError -> 409, ProposalRejected / ExplanationRejected -> 422,
-ValueError -> 400.
+ValueError -> 400, MissingCredentials -> 503, ModelRefused -> 502.
 """
 
 from __future__ import annotations
@@ -25,7 +26,17 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from nvplan import config
-from nvplan.ai import ExplanationRejected, ProposalRejected, run_deviation_explanation, run_env_scan, run_revenue_proposal
+from nvplan.ai import (
+    ExplanationRejected,
+    MissingCredentials,
+    ModelRefused,
+    ProposalRejected,
+    credential_hint,
+    credentials_available,
+    run_deviation_explanation,
+    run_env_scan,
+    run_revenue_proposal,
+)
 from nvplan.api import queries as q
 from nvplan.api import schemas as S
 from nvplan.db.models import AiRecord
@@ -86,16 +97,17 @@ def _plan_run_out(run: PlanRun) -> dict[str, Any]:
 
 
 def resolve_model(app: FastAPI, touchpoint: str, context: dict[str, Any]):
-    """Injected model factory first; else the real model if a key is present; else 503."""
+    """Injected model factory first; else the real model if a credential is resolvable; else 503.
+
+    The 503 detail is ``nvplan.ai.credential_hint()`` verbatim - the same message
+    ``MissingCredentials`` and ``nvplan-ai-check`` print, so there is one wording of "what to do
+    about a missing key" in the whole project. (Tests inject ``app.state.model_factory``
+    instead; that path never touches a credential.)"""
     factory: ModelFactory | None = app.state.model_factory
     if factory is not None:
         return factory(touchpoint, context)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise HTTPException(
-            status_code=503,
-            detail=(f"AI touchpoint '{touchpoint}' needs a model: set ANTHROPIC_API_KEY (model {config.AI_MODEL}) "
-                    "or inject app.state.model_factory. The deterministic plan does not depend on it."),
-        )
+    if not credentials_available():
+        raise HTTPException(status_code=503, detail=credential_hint())
     from nvplan.ai import get_model
 
     return get_model()
@@ -120,6 +132,20 @@ def _register(app: FastAPI) -> None:
     @app.exception_handler(ExplanationRejected)
     async def _explanation_rejected(_r, exc):  # noqa: ANN001
         return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    @app.exception_handler(MissingCredentials)
+    async def _no_credentials(_r, exc):  # noqa: ANN001
+        # get_model() raised inside a run (no factory injected, credential vanished mid-flight).
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(ModelRefused)
+    async def _refused(_r, exc):  # noqa: ANN001
+        # HTTP 200 + stop_reason="refusal" from the provider: the upstream model declined and
+        # nothing was persisted -> 502, not a 5xx of ours and not a client error.
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"the model declined this request; no ai_record was written. {exc}"},
+        )
 
     @app.exception_handler(ValueError)
     async def _bad_request(_r, exc):  # noqa: ANN001

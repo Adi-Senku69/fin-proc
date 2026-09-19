@@ -34,7 +34,7 @@ questions.
   callback on the first model call; it includes the skill index deepagents appends) +
   `---USER---` + the rendered user prompt. `response_text` = the model's final prose +
   `---STRUCTURED---` + the JSON of the structured response. `model_version` =
-  `ChatAnthropic.model` (or `"fake"` in tests). Because the context middleware can rewrite
+  `ChatAnthropic.model` (or `"fake"` in tests; `nvplan-ai-check` prints the resolved value). Because the context middleware can rewrite
   what later calls see, `ai_record.call_log_json` additionally stores every model call of the
   run verbatim (see "Context management: the audit trail").
 * **Deviation calculated deterministically, explained by AI** — `figures.plan_vs_actual` is the
@@ -58,26 +58,92 @@ entrypoint then finalises the same row with the prompt/response text. If the mod
 tool, the entrypoint pushes the structured proposal through the same validator and raises
 `ProposalRejected`. One run produces at most one `ai_record`.
 
-## Running with a real model
+## Running against the real model
+
+**The `.env` file.** `nvplan/config.py` calls `load_dotenv(override=False)` at import, so
+`<project root>/.env` is read once, a missing file is not an error, and a variable already
+exported always wins over the file. Put `ANTHROPIC_API_KEY=sk-ant-...` in it (`.env` is
+git-ignored, mode 600; `.env.example` is the template) and every entrypoint, the API and
+`nvplan-demo` find it with nothing exported. `ANTHROPIC_WORKSPACE_ID` is **not** a credential:
+it is forwarded as the `anthropic-workspace-id` request header, which an *organization-level*
+key needs (without it the API answers `400 ... "This API key is not scoped to a workspace"`) and
+a workspace-scoped key does not. Ordering matters and is deliberate: config loads the file at
+import, `agents.py` reads the environment lazily at call time (`credentials_available`,
+`get_model`, `workspace_headers`), so no import order can hide the key and `monkeypatch.delenv`
+still produces the no-credential path.
+
+**The knobs.** Four values, each overridable by an environment variable (so also by `.env`):
+`AI_MODEL` = `claude-opus-5` (`NVPLAN_AI_MODEL`), `AI_EFFORT` = `high` (`NVPLAN_AI_EFFORT`,
+validated against `low|medium|high|xhigh|max` with a `ValueError` naming the allowed set),
+`AI_MAX_TOKENS` = `16000` (`NVPLAN_AI_MAX_TOKENS`; the previous 8192 risked truncating a
+54-position env scan) and `AI_BETAS` = `[]` (`NVPLAN_AI_BETAS`, comma-separated escape hatch for
+beta flags). `get_model()` builds `ChatAnthropic(model=, max_tokens=, effort=[, betas=][,
+default_headers=])` **and nothing else**: `temperature`/`top_p`/`top_k` exist as fields but
+`claude-opus-5` rejects every sampling parameter with a 400, and `thinking` is omitted entirely
+because Opus 5 runs adaptive thinking by default while `budget_tokens` was removed from the API
+(also a 400). `effort` is the alias of `reasoning_effort` and lands in the request as
+`output_config.effort`. A `BaseChatModel` handed to `get_model` is still passed through
+untouched, which is how all 182 offline tests inject `nvplan.ai.fake`.
+
+**`uv run nvplan-ai-check`** is the first thing to run. It prints the resolved configuration
+(model, effort, max_tokens, betas, where each came from, whether `.env` was found) and then, with
+a credential, makes exactly one cheap real call (trivial prompt, `max_tokens=64`, `effort="low"`)
+through the same client construction the touchpoints use, reporting the model id, the
+`model_version` string that lands in `ai_record.model_version`, the model the server actually
+served, input/output/cache tokens, latency and a `PASS` line. Without a credential it prints
+`credential_hint()` - the message `MissingCredentials` carries and the API returns as its 503
+detail - and exits 1, sending nothing. `--touchpoint {env-scan,revenue-proposal,deviation-explanation}`
+instead runs one real touchpoint end to end on a temporary database seeded exactly like
+`nvplan-demo`, printing the stored prompt excerpt, the rationale, the proposed value and the
+`ai_record` id. Exit codes: 0 pass, 1 no credential, 2 failed (with hints: workspace header, bad
+key, model not found, no route, and a guardrail rejection reported as such).
+
+**Live tests.** `tests/test_live_model.py` covers what no fake can: a real structured-output call
+returns the pydantic schema, `model_version` is a real model id and never `"fake"`,
+`usage_metadata` is populated, and `effort`/`max_tokens` reach the request body while no sampling
+parameter does. They are marked `live`, skipped when `credentials_available()` is false, and
+deselected by default (`addopts = -m 'not live'`), so `uv run pytest` never calls out. Run them
+deliberately:
 
 ```bash
-export ANTHROPIC_API_KEY=...
-uv run python -c "
-from nvplan.db.session import SessionLocal, get_engine, init_db
-from nvplan.ai import run_revenue_proposal
-init_db(get_engine('sqlite:///nvplan.db'))
-rec = run_revenue_proposal(SessionLocal, scenario_kind='base', year=2027, default_value=23100.0)
-print(rec.id, rec.proposed_value, rec.rationale)
-"
+uv run pytest -m live      # real API calls, needs a credential
+uv run pytest              # the offline suite, live tests deselected
 ```
 
-`model=None` resolves to `ChatAnthropic(model=config.AI_MODEL)` (`claude-opus-5`); pass a model
-name string or any `BaseChatModel` to override. Tests use `nvplan.ai.fake.FakeToolCallingModel`
-(a `FakeMessagesListChatModel` with a no-op `bind_tools`) and one scripted scenario per
-touchpoint, so they run without network or key. The deviation script
-(`fake.ScriptedDeviationModel`) fills its contributions from the deterministic table it was
-shown (the `get_plan_vs_actual` tool result, or a `table=` handed in) unless a test scripts
-them explicitly to provoke a rejection.
+**Refusal handling.** Opus 5 can decline a request with HTTP **200**, `stop_reason="refusal"` and
+a `stop_details` object; `langchain-anthropic` 1.7.1 has no handling for that stop reason
+whatsoever, so the run would otherwise look like an empty answer or "agent finished without a
+structured response". All three entrypoints therefore inspect the final AI message's
+`response_metadata` right after the agent run and raise `ModelRefused` carrying the refusal
+category and explanation. Nothing is persisted - and because `record_revenue_proposal` /
+`record_external_note` commit *during* a run, the refusal path deletes what they already wrote,
+so "no `ai_record`, no notes" holds exactly as for `ExplanationRejected`. The API maps
+`ModelRefused` to **502** (`MissingCredentials` to 503).
+
+**Reading the usage numbers (does caching work?).** `stream_usage` is True by default, so every
+real response carries `usage_metadata`; `nvplan.ai.audit` records it per model call as the
+`usage` key of the call log (`input_tokens`, `output_tokens`, `total_tokens`, plus
+`cache_read_tokens` / `cache_creation_tokens` when reported), keeps `approx_tokens` as the
+offline estimate, and maintains the same figures summed over the run in
+`AiRunContext.total_usage` alongside `call_log` (`audit.total_usage(call_log)` recomputes it from
+a persisted log; `usage` is `null` with the fake model, which reports no usage metadata). This is
+how the prompt-caching middleware is held accountable: on a real run the first call writes the
+stable prefix (`cache_creation_tokens` > 0 or a cold `input_tokens`) and later calls read it back
+(`cache_read_tokens` close to `input_tokens`). A measured example - `nvplan-ai-check --touchpoint
+revenue-proposal`, 5 model calls: `input 42,517, output 1,795, cache read 31,968`, i.e. three
+quarters of the input tokens served from cache at a tenth of the price. `cache_read_tokens`
+staying at 0 across the calls of one run means something upstream of the breakpoint changed
+between calls.
+
+**Offline by default.** With no credential nothing reaches the network: the tests inject
+`nvplan.ai.fake.FakeToolCallingModel` (a `FakeMessagesListChatModel` with a no-op `bind_tools`)
+with one scripted scenario per touchpoint, and the deviation script
+(`fake.ScriptedDeviationModel`) fills its contributions from the deterministic table it was shown
+(the `get_plan_vs_actual` tool result, or a `table=` handed in) unless a test scripts them
+explicitly to provoke a rejection. `fake.refusing_model()` scripts the refusal shape.
+`nvplan-demo` picks the real model when a credential is resolvable and the scripted fakes
+otherwise (`--fake-ai` forces the fakes) - note that since `.env` is loaded automatically, a key
+in `.env` is enough to make the plain `uv run nvplan-demo` spend money.
 
 Note: deepagents auto-adds a `general-purpose` subagent (`task` tool) to every agent; it
 inherits the same tool set, so it cannot write anything the touchpoint itself cannot.
@@ -159,10 +225,14 @@ via `summarization_model=` if the runs get long.
 `ContextAuditMiddleware` (last in the list, so it sees the request after summarization)
 appends one dict per model call to `AiRunContext.call_log`:
 
-`call_index, timestamp, n_messages, approx_tokens, summarized, evicted_tool_results,
+`call_index, timestamp, n_messages, approx_tokens, usage, summarized, evicted_tool_results,
 tools_offered, system_prompt_chars, request{system, messages[{role, content_excerpt (2 000
 chars), tool_calls, tool_name, evicted, summary}]}, response{stop, text_excerpt, tool_calls,
 usage}`.
+
+`approx_tokens` is the offline estimate (`count_tokens_approximately`, no model call); `usage` is
+the provider's real count for that call (`null` with the fake model) and is summed over the run in
+`AiRunContext.total_usage` - see "Reading the usage numbers" above.
 
 `summarized` is detected by the summary `HumanMessage` deepagents inserts
 (`additional_kwargs["lc_source"] == "summarization"`), with a fallback comparing the request's

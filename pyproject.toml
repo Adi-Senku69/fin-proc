@@ -20,12 +20,14 @@ dependencies = [
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "uvicorn>=0.52.4",
+    "python-dotenv>=1.2.3",
 ]
 
 [project.scripts]
 nvplan-gen-data = "nvplan.data.generate:main"
 nvplan-demo = "nvplan.api.demo:main"
 nvplan-serve = "nvplan.api.app:serve"
+nvplan-ai-check = "nvplan.ai.check:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
@@ -35,3 +37,10 @@ packages = ["nvplan"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Live tests hit the real Anthropic API (they cost money and need a credential). They are
+# skipped without one, and `-m "not live"` is the default so a plain `uv run pytest` never
+# calls out. Run them deliberately with: uv run pytest -m live
+markers = [
+    "live: makes a real Anthropic API call (needs a credential; run with -m live)",
+]
+addopts = "-m 'not live'"

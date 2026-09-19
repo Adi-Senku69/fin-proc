@@ -47,6 +47,9 @@ written; a mismatch raises ``ExplanationRejected`` and no ai_record exists.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+from pathlib import Path
 from typing import Any, Sequence
 
 from langchain.agents.structured_output import ToolStrategy
@@ -109,20 +112,172 @@ class ProposalRejected(ValueError):
     """The structured revenue proposal broke a control-table rule; nothing was written."""
 
 
-__all__ = ["ExplanationRejected", "ProposalRejected"]  # ExplanationRejected lives in nvplan.ai.figures
+class MissingCredentials(RuntimeError):
+    """No Anthropic credential is resolvable, so no real model can be built.
+
+    Carries ``credential_hint()`` as its message: the exact thing to do next. Raised instead of
+    letting a bare SDK authentication error (or a pydantic validation error about ``api_key``)
+    surface. The API's 503 path returns this message verbatim."""
+
+
+class ModelRefused(RuntimeError):
+    """The model declined the request (HTTP 200 with ``stop_reason="refusal"``).
+
+    langchain-anthropic 1.7.1 has no handling for that stop reason at all, so the run would
+    otherwise look like an empty or malformed answer. Nothing is persisted (same discipline as
+    ``ExplanationRejected``); the API maps it to 502."""
+
+
+# ExplanationRejected lives in nvplan.ai.figures
+__all__ = ["ExplanationRejected", "MissingCredentials", "ModelRefused", "ProposalRejected"]
+
+
+# --------------------------------------------------------------------------- credentials
+
+# Env vars the Anthropic SDK resolves itself, in its own precedence order.
+CREDENTIAL_ENV_VARS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+# ANTHROPIC_WORKSPACE_ID is *not* a credential and never gates anything. A workspace-scoped key
+# routes itself and needs nothing. An organization-level key does not: the API answers
+# 400 invalid_request_error "This API key is not scoped to a workspace, so this request must
+# include the anthropic-workspace-id header ..." - verified against the live API on 2026-09-19
+# with the key in .env. The SDK does not read the variable for the Messages API (it is only a
+# Workload-Identity-Federation input), so when it is set nvplan forwards it as that one request
+# header and otherwise sends nothing. Setting it with a workspace-scoped key is harmless.
+WORKSPACE_ENV_VAR = "ANTHROPIC_WORKSPACE_ID"
+WORKSPACE_HEADER = "anthropic-workspace-id"
+
+
+def workspace_headers() -> dict[str, str]:
+    """``{"anthropic-workspace-id": ...}`` when ``ANTHROPIC_WORKSPACE_ID`` is set, else ``{}``."""
+    workspace = os.environ.get(WORKSPACE_ENV_VAR, "").strip()
+    return {WORKSPACE_HEADER: workspace} if workspace else {}
+
+
+def _ant_cli() -> str | None:
+    """Path to the ``ant`` CLI, or None when it is not installed."""
+    return shutil.which("ant")
+
+
+def _ant_profile_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(base) if base else Path.home() / ".config") / "anthropic"
+
+
+def _ant_profile_available() -> bool:
+    """True when ``ant auth login`` has stored a profile the SDK can pick up with no env var.
+
+    Checked as files (cheap, no subprocess): the ``ant`` CLI plus at least one JSON file in its
+    config directory."""
+    if _ant_cli() is None:
+        return False
+    try:
+        return any(_ant_profile_dir().glob("*.json"))
+    except OSError:
+        return False
+
+
+def credentials_available() -> bool:
+    """True when a real model can be built (an env credential, or a stored ``ant`` profile).
+
+    Read lazily on every call, never cached at import, so ``nvplan.config``'s ``.env`` load and a
+    test's ``monkeypatch.delenv`` are both visible."""
+    if any(os.environ.get(name, "").strip() for name in CREDENTIAL_ENV_VARS):
+        return True
+    return _ant_profile_available()
+
+
+def credential_hint() -> str:
+    """One paragraph naming exactly what to do to get a credential (the ``MissingCredentials``
+    message, and the API's 503 detail)."""
+    options = [
+        f"(1) put ANTHROPIC_API_KEY=sk-ant-... in {config.DOTENV_PATH} - it is git-ignored, "
+        "nvplan.config loads it at import, and .env.example is the template",
+        "(2) export ANTHROPIC_API_KEY=sk-ant-... in this shell",
+    ]
+    if _ant_cli() is not None:
+        options.append("(3) run `ant auth login` - the stored profile is resolved without any environment variable")
+    return (
+        f"No Anthropic credential found, so the model {config.AI_MODEL!r} cannot be built. "
+        + "Fix it one of these ways: "
+        + "; ".join(options)
+        + ". ANTHROPIC_WORKSPACE_ID is not a credential and does not help on its own: it is only "
+        "forwarded as the anthropic-workspace-id request header, which an organization-level key "
+        "needs and a workspace-scoped key does not. Verify with: uv run nvplan-ai-check. "
+        "The deterministic planning engine does not depend on the AI layer."
+    )
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in text for marker in ("api_key", "api key", "authentication", "credential", "unauthorized"))
 
 
 # --------------------------------------------------------------------------- model
 
+# What get_model sends, and - just as important - what it never sends (claude-opus-5 via
+# langchain-anthropic 1.7.1):
+# * temperature / top_p / top_k exist as ChatAnthropic fields but Opus 5 rejects every sampling
+#   parameter with a 400. They are never set, at any level of the stack.
+# * `thinking` is omitted entirely: Opus 5 runs adaptive thinking by default (the client fills in
+#   {"type": "adaptive", "display": "summarized"} itself). `budget_tokens` was removed from the
+#   API and returns a 400, so no thinking budget is ever passed either.
+# * Depth is controlled by `effort` (the alias of ChatAnthropic.reasoning_effort), which the
+#   client renders as request `output_config.effort` - the supported replacement for a budget.
+# * `stream_usage` stays at its default True so every response carries usage_metadata, which
+#   nvplan.ai.audit records per call (that is how prompt-cache effectiveness is measured).
+# * The only header ever added is anthropic-workspace-id, and only when ANTHROPIC_WORKSPACE_ID is
+#   set (see WORKSPACE_ENV_VAR: an organization-level key is rejected with a 400 without it).
+
+
+def build_chat_model(
+    model: str | None = None,
+    *,
+    max_tokens: int | None = None,
+    effort: str | None = None,
+    betas: Sequence[str] | None = None,
+) -> BaseChatModel:
+    """Construct the real ``ChatAnthropic`` (lazy import), defaults from ``config``.
+
+    ``get_model`` is the entrypoint the touchpoints use; this one exists so the smoke check
+    (``nvplan.ai.check``) can make one deliberately cheap call (small ``max_tokens``, effort
+    ``low``) through exactly the same client construction."""
+    if not credentials_available():
+        raise MissingCredentials(credential_hint())
+    from langchain_anthropic import ChatAnthropic  # lazy: offline tests need neither the package nor a key
+
+    effort = effort or config.AI_EFFORT
+    if effort not in config.AI_EFFORTS:
+        raise ValueError(f"effort {effort!r} is not valid; expected one of {', '.join(config.AI_EFFORTS)}")
+    kwargs: dict[str, Any] = {
+        "model": model or config.AI_MODEL,
+        "max_tokens": int(max_tokens or config.AI_MAX_TOKENS),
+        "effort": effort,
+    }
+    flags = list(betas if betas is not None else config.AI_BETAS)
+    if flags:
+        kwargs["betas"] = flags
+    headers = workspace_headers()  # only when the key is organization-level (see WORKSPACE_ENV_VAR)
+    if headers:
+        kwargs["default_headers"] = headers
+    try:
+        return ChatAnthropic(**kwargs)
+    except Exception as exc:  # noqa: BLE001 - re-raised unless it is an auth problem
+        if _is_auth_error(exc):
+            raise MissingCredentials(credential_hint()) from exc
+        raise
+
 
 def get_model(model: str | BaseChatModel | None = None) -> BaseChatModel:
-    """Return a chat model. Default: ``ChatAnthropic(model=config.AI_MODEL)`` (lazy import,
-    so tests with a fake model never need ``langchain_anthropic`` or an API key)."""
+    """Return a chat model.
+
+    A ``BaseChatModel`` is passed straight through untouched (that is how every offline test
+    injects ``nvplan.ai.fake``). Anything else builds the configured ``ChatAnthropic``
+    (``config.AI_MODEL`` / ``AI_MAX_TOKENS`` / ``AI_EFFORT`` / ``AI_BETAS``) and raises
+    ``MissingCredentials`` with ``credential_hint()`` when there is no key."""
     if isinstance(model, BaseChatModel):
         return model
-    from langchain_anthropic import ChatAnthropic  # lazy: needs ANTHROPIC_API_KEY at call time
-
-    return ChatAnthropic(model=model or config.AI_MODEL, max_tokens=8192)
+    return build_chat_model(model)
 
 
 def model_version(model: BaseChatModel) -> str:
@@ -388,9 +543,77 @@ def _table_text(data: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------- run helpers
 
 
-def _invoke(agent, user_prompt: str) -> tuple[dict[str, Any], PromptCapture]:
+REFUSAL_STOP_REASON = "refusal"
+
+
+def _final_ai_message(messages: Sequence[BaseMessage]) -> AIMessage | None:
+    for m in reversed(messages or []):
+        if isinstance(m, AIMessage):
+            return m
+    return None
+
+
+def refusal_details(message: AIMessage | None) -> dict[str, Any] | None:
+    """``{"category": ..., "explanation": ...}`` when this message is a policy refusal, else None.
+
+    Anthropic returns HTTP 200 with ``stop_reason="refusal"`` and a ``stop_details`` object
+    (``{"type": "refusal", "category", "explanation"}``); ``stop_details`` is null for every
+    other stop reason, so it is read defensively."""
+    if message is None:
+        return None
+    meta = getattr(message, "response_metadata", None) or {}
+    if not isinstance(meta, dict):
+        return None
+    stop = meta.get("stop_reason") or meta.get("finish_reason")
+    if stop != REFUSAL_STOP_REASON:
+        return None
+    details = meta.get("stop_details")
+    details = details if isinstance(details, dict) else {}
+    return {"category": details.get("category"), "explanation": details.get("explanation")}
+
+
+def _raise_if_refused(messages: Sequence[BaseMessage]) -> None:
+    """Raise ``ModelRefused`` when the run's final AI message is a refusal (checked before the
+    structured response, because a refused turn carries no structured output)."""
+    details = refusal_details(_final_ai_message(messages))
+    if details is None:
+        return
+    category = details.get("category") or "unspecified"
+    explanation = details.get("explanation") or "(no explanation returned)"
+    raise ModelRefused(
+        f"the model declined this request (stop_reason={REFUSAL_STOP_REASON}, category={category}): "
+        f"{explanation} - nothing was persisted"
+    )
+
+
+def _discard_partial_writes(session_factory: SessionFactory, ctx: AiRunContext) -> None:
+    """Delete whatever the write tools committed mid-run (used on a refusal).
+
+    ``record_revenue_proposal`` / ``record_external_note`` commit while the agent is running, so
+    "persist nothing" has to be enforced after the fact."""
+    if ctx.ai_record_id is None and not ctx.note_ids:
+        return
+    with session_factory() as s:
+        for note in s.scalars(select(ExternalNote).where(ExternalNote.id.in_(ctx.note_ids or [-1]))).all():
+            s.delete(note)
+        if ctx.ai_record_id is not None:
+            rec = s.get(AiRecord, ctx.ai_record_id)
+            if rec is not None:
+                s.delete(rec)
+        s.commit()
+    ctx.note_ids.clear()
+    ctx.ai_record_id = None
+
+
+def _invoke(agent, user_prompt: str, *, session_factory: SessionFactory, ctx: AiRunContext) -> tuple[dict[str, Any], PromptCapture]:
+    """Run the agent, then refuse-check before anything is read out of the result."""
     capture = PromptCapture()
     result = agent.invoke({"messages": [{"role": "user", "content": user_prompt}]}, config={"callbacks": [capture]})
+    try:
+        _raise_if_refused(result.get("messages") or [])
+    except ModelRefused:
+        _discard_partial_writes(session_factory, ctx)
+        raise
     if "structured_response" not in result or result["structured_response"] is None:
         raise RuntimeError("agent finished without a structured response")
     return result, capture
@@ -426,7 +649,7 @@ def run_env_scan(
     ctx.prompt_text = _prompt_text(prompts.ENV_SCAN_SYSTEM, user_prompt)
 
     agent = build_touchpoint_agent("env_scan", model=chat, session_factory=session_factory, extra_context=ctx, policy=policy)
-    result, capture = _invoke(agent, user_prompt)
+    result, capture = _invoke(agent, user_prompt, session_factory=session_factory, ctx=ctx)
     scan: EnvScanResult = result["structured_response"]
 
     with session_factory() as s:
@@ -480,7 +703,7 @@ def run_revenue_proposal(
     ctx.prompt_text = _prompt_text(prompts.REVENUE_PROPOSAL_SYSTEM, user_prompt)
 
     agent = build_touchpoint_agent("revenue_proposal", model=chat, session_factory=session_factory, extra_context=ctx, policy=policy)
-    result, capture = _invoke(agent, user_prompt)
+    result, capture = _invoke(agent, user_prompt, session_factory=session_factory, ctx=ctx)
     proposal: RevenueProposal = result["structured_response"]
 
     with session_factory() as s:
@@ -529,7 +752,7 @@ def run_deviation_explanation(
     ctx.prompt_text = _prompt_text(prompts.DEVIATION_EXPLANATION_SYSTEM, user_prompt)
 
     agent = build_touchpoint_agent("deviation_explanation", model=chat, session_factory=session_factory, extra_context=ctx, policy=policy)
-    result, capture = _invoke(agent, user_prompt)
+    result, capture = _invoke(agent, user_prompt, session_factory=session_factory, ctx=ctx)
     explanation: DeviationExplanation = result["structured_response"]
 
     # "Deviation calculated deterministically, explained by AI": the model's figures must be

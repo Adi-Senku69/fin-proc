@@ -27,7 +27,17 @@ How each field is detected
 * ``evicted_tool_results``: ``ToolMessage``s whose text references ``/large_tool_results/``
   (the pointer deepagents' ``FilesystemMiddleware`` leaves behind after eviction).
 * ``approx_tokens``: ``count_tokens_approximately`` over system + messages (chars/4 + 3 per
-  message; no model call). Tool schemas are not included.
+  message; no model call). Tool schemas are not included. It is an offline estimate and stays
+  the only token figure available with the fake model.
+* ``usage``: the *real* per-call token usage the provider reported
+  (``AIMessage.usage_metadata``; ``ChatAnthropic.stream_usage`` defaults to True, so a real
+  response always carries it): ``input_tokens``, ``output_tokens``, ``total_tokens`` plus
+  ``cache_read_tokens`` / ``cache_creation_tokens`` when the provider reports them. It is
+  ``null`` with the fake model (a scripted ``AIMessage`` has no usage metadata) - that is the
+  offline case, not a bug. ``AiRunContext.total_usage`` holds the same keys summed over every
+  call of the run, maintained alongside ``call_log``; ``total_usage(call_log)`` recomputes it
+  from a persisted log. Those two cache figures are how prompt-caching effectiveness is
+  measured: cache_creation on the first call, cache_read on every later call of the run.
 """
 
 from __future__ import annotations
@@ -50,12 +60,23 @@ CALL_LOG_KEYS: tuple[str, ...] = (
     "timestamp",
     "n_messages",
     "approx_tokens",
+    "usage",
     "summarized",
     "evicted_tool_results",
     "tools_offered",
     "system_prompt_chars",
     "request",
     "response",
+)
+
+# Keys of the per-call ``usage`` dict (and of ``AiRunContext.total_usage``). The two cache keys
+# only appear when the provider reported them.
+USAGE_KEYS: tuple[str, ...] = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
 )
 
 
@@ -118,6 +139,42 @@ def _message_entry(m: BaseMessage) -> dict[str, Any]:
     return entry
 
 
+def usage_entry(message: BaseMessage | None) -> dict[str, int] | None:
+    """Real token usage of one response, or None when the provider reported none (fake model).
+
+    ``usage_metadata`` is langchain's normalized shape
+    (``{input_tokens, output_tokens, total_tokens, input_token_details: {cache_read, cache_creation}}``);
+    the two cache figures are only included when reported."""
+    usage = getattr(message, "usage_metadata", None) if message is not None else None
+    if not usage:
+        return None
+    out: dict[str, int] = {}
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        value = usage.get(key)
+        if isinstance(value, int):
+            out[key] = value
+    details = usage.get("input_token_details") or {}
+    if isinstance(details, dict):
+        for src, dst in (("cache_read", "cache_read_tokens"), ("cache_creation", "cache_creation_tokens")):
+            value = details.get(src)
+            if isinstance(value, int):
+                out[dst] = value
+    return out or None
+
+
+def total_usage(call_log: Sequence[dict[str, Any]]) -> dict[str, int]:
+    """``usage`` summed over every call of a (possibly persisted) call log; ``{}`` when none reported."""
+    totals: dict[str, int] = {}
+    for entry in call_log or []:
+        usage = entry.get("usage") if isinstance(entry, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        for key, value in usage.items():
+            if isinstance(value, int):
+                totals[key] = totals.get(key, 0) + value
+    return totals
+
+
 def _response_entry(result: Sequence[BaseMessage] | None) -> dict[str, Any]:
     ai = next((m for m in (result or []) if isinstance(m, AIMessage)), None)
     if ai is None:
@@ -154,12 +211,17 @@ class ContextAuditMiddleware(AgentMiddleware):
         system = request.system_message
         system_text = message_text(system.content) if system is not None else ""
         counted = ([system] if system is not None else []) + messages
+        usage = usage_entry(next((m for m in (result or []) if isinstance(m, AIMessage)), None))
+        if usage:
+            for key, value in usage.items():
+                self.ctx.total_usage[key] = self.ctx.total_usage.get(key, 0) + value
         self.ctx.call_log.append(
             {
                 "call_index": len(self.ctx.call_log),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "n_messages": len(messages),
                 "approx_tokens": int(count_tokens_approximately(counted)),
+                "usage": usage,
                 "summarized": _summarized(messages, request.state),
                 "evicted_tool_results": sum(1 for m in messages if _is_evicted(m)),
                 "tools_offered": sorted(_tool_name(t) for t in (request.tools or [])),

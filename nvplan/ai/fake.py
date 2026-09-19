@@ -16,7 +16,9 @@ script starts with a ``read_file`` of the touchpoint's skill
 (``/skills/<name>/SKILL.md``), which proves the skills route of the composite
 backend resolves; the tests assert the skill text came back in the ToolMessage.
 ``fake_summary_model`` is a separate instance for the summarization middleware
-(a shared fake would consume scripted turns).
+(a shared fake would consume scripted turns). ``refusal`` / ``refusing_model`` script the
+Anthropic policy-refusal shape (HTTP 200, ``stop_reason="refusal"`` + ``stop_details``) that
+``nvplan.ai.agents`` turns into ``ModelRefused``.
 """
 
 from __future__ import annotations
@@ -274,3 +276,40 @@ def scripted_deviation_model(
         ],
         table=table,
     )
+
+
+# --------------------------------------------------------------------------- refusals
+
+
+REFUSAL_CATEGORY = "reasoning_extraction"
+REFUSAL_EXPLANATION = "This request was declined by a safety classifier (scripted, offline)."
+
+
+def refusal(
+    content: str = "",
+    *,
+    category: str | None = REFUSAL_CATEGORY,
+    explanation: str | None = REFUSAL_EXPLANATION,
+) -> AIMessage:
+    """An AI message shaped like a real Anthropic policy refusal.
+
+    Opus 5 returns HTTP 200 with ``stop_reason="refusal"`` and a ``stop_details`` object;
+    langchain-anthropic 1.7.1 has no handling for it, which is why
+    ``nvplan.ai.agents`` raises ``ModelRefused`` on this shape.
+    """
+    details: dict[str, Any] = {"type": "refusal"}
+    if category is not None:
+        details["category"] = category
+    if explanation is not None:
+        details["explanation"] = explanation
+    return AIMessage(content=content, response_metadata={"stop_reason": "refusal", "stop_details": details})
+
+
+def refusing_model(*, before: list[AIMessage] | None = None, **kwargs: Any) -> FakeToolCallingModel:
+    """A fake whose (only, or final) turn is a refusal.
+
+    ``before`` scripts turns that run first - e.g. a ``record_revenue_proposal`` call - so a test
+    can prove the entrypoint deletes what a write tool already committed when the run is then
+    refused.
+    """
+    return FakeToolCallingModel(responses=[*(before or []), refusal(**kwargs)])

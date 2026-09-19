@@ -1,9 +1,35 @@
-"""Project-wide constants: paths, category codes, windows, labels."""
+"""Project-wide constants: paths, category codes, windows, labels, AI model knobs.
 
+Environment (.env)
+------------------
+Importing this module loads ``<project root>/.env`` once via python-dotenv with
+``override=False``: a variable already present in the real environment always wins, and a
+missing file is not an error. That is how ``ANTHROPIC_API_KEY`` reaches the Anthropic client
+without anyone exporting it (``.env`` is git-ignored, mode 600; ``.env.example`` documents the
+format).
+
+Ordering matters: this module loads the file at import time, and ``nvplan.ai.agents`` reads the
+environment *lazily at call time* (``credentials_available``, ``get_model``), never at import.
+So any import order works, and a test that deletes ``ANTHROPIC_API_KEY`` with
+``monkeypatch.delenv`` still sees the no-credential path.
+
+The ``AI_*`` values below are read from the environment at import with the documented
+``NVPLAN_*`` variable names, so ``.env`` can override every one of them.
+"""
+
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "illustrative"
+
+DOTENV_PATH = PROJECT_ROOT / ".env"
+# Non-fatal when absent; never overrides an already-set environment variable. The second call
+# picks up a .env in the current working directory (or above it) when nvplan is used elsewhere.
+load_dotenv(DOTENV_PATH, override=False)
+load_dotenv(override=False)
 
 DEFAULT_DB_URL = "sqlite:///nvplan.db"
 
@@ -20,7 +46,56 @@ PLAN_YEARS: tuple[int, int] = (2026, 2030)
 # Every generated / dummy figure carries this label as its source.
 ILLUSTRATIVE_LABEL = "ILLUSTRATIVE"
 
-AI_MODEL = "claude-opus-5"
+
+# --------------------------------------------------------------------------- env helpers
+
+
+def _env(name: str) -> str | None:
+    """The environment value of ``name``, or None when unset/blank."""
+    raw = os.environ.get(name)
+    return raw.strip() if raw and raw.strip() else None
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name}={raw!r} is not an integer") from exc
+    if value <= 0:
+        raise ValueError(f"{name}={raw!r} must be a positive number of tokens")
+    return value
+
+
+def _env_list(name: str) -> list[str]:
+    """Comma-separated list, empty when unset."""
+    raw = _env(name)
+    return [part.strip() for part in raw.split(",") if part.strip()] if raw else []
+
+
+# --------------------------------------------------------------------------- AI model config
+
+# Model id handed to ChatAnthropic (nvplan.ai.agents.get_model).
+AI_MODEL = _env("NVPLAN_AI_MODEL") or "claude-opus-5"
+
+# Reasoning depth: ChatAnthropic(effort=...) -> request output_config.effort. "high" is the
+# API default; "low" is enough for the smoke check, "max" for correctness-critical runs.
+AI_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+AI_EFFORT = _env("NVPLAN_AI_EFFORT") or "high"
+if AI_EFFORT not in AI_EFFORTS:
+    raise ValueError(
+        f"NVPLAN_AI_EFFORT={AI_EFFORT!r} is not a valid effort level; expected one of {', '.join(AI_EFFORTS)}"
+    )
+
+# Output cap per model call. 16 000 rather than the old 8 192: one env-scan turn can flag many
+# of the 54 framework positions with a reasoning line each, and a truncated turn is a lost run.
+AI_MAX_TOKENS = _env_int("NVPLAN_AI_MAX_TOKENS", 16_000)
+
+# Escape hatch for Anthropic beta flags (comma-separated), e.g. NVPLAN_AI_BETAS=fast-mode-2026-02-01.
+# Empty by default: nothing in this PoC needs a beta.
+AI_BETAS: list[str] = _env_list("NVPLAN_AI_BETAS")
 
 # Context-window policy defaults for the AI layer (see nvplan/ai/context.py).
 # Approximate tokens (count_tokens_approximately: chars/4 + 3 per message), not model-exact.

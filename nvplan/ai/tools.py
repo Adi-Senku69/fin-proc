@@ -79,6 +79,10 @@ class AiRunContext:
     # One entry per model call, appended by nvplan.ai.audit.ContextAuditMiddleware and
     # persisted as ai_record.call_log_json (the literal per-call prompt/response record).
     call_log: list[dict[str, Any]] = field(default_factory=list)
+    # Real token usage summed over every call of the run, maintained by the same middleware
+    # alongside call_log (empty with the fake model, which reports no usage_metadata). Recomputable
+    # from a persisted log with nvplan.ai.audit.total_usage(call_log).
+    total_usage: dict[str, int] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- helpers
