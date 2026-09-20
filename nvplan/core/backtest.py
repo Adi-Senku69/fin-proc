@@ -21,6 +21,18 @@ Fits and projections of each case are registered into a private scratch ledger
 the summary rows ``backtest:{code}:h{horizon}`` (and
 ``backtest:{code}:h{horizon}:default_revenue`` for the end-to-end cost rows) are
 registered into the caller's ledger, with inputs = the list of (case, plan, actual).
+
+C1 -- a fit graded "review" is refused by ``nvplan.core.projector.project_scenario``. Unlike the
+live planning path (``services.planning.run_plan``), where that refusal should abort the whole
+run, this backtest exists specifically to measure how fits behave across many rolling windows,
+some of which are expected to be weaker than others -- crashing the whole report because one
+category in one window was graded for review would hide the other 14 (category, horizon) cells
+that measured fine. So a "review"-graded category is dropped from the categories projected for
+*that training window only*, and recorded in :attr:`BacktestResult.skipped` with its reason,
+rather than raising. On the real illustrative data this never fires (the worst R^2 across every
+rolling window is 0.91, VERIFICATION.md 5), so it changes nothing about today's numbers; it
+exists so a future, harder dataset fails honestly (a shorter summary table plus a skip reason)
+rather than crashing the report outright.
 """
 
 from __future__ import annotations
@@ -248,6 +260,11 @@ class BacktestResult:
     threshold_high: float = THRESHOLD_HIGH
     #: (alpha, beta, v, r2) of every train window, for the report
     fits: pd.DataFrame = field(default_factory=pd.DataFrame)
+    #: (train_window, category_code, reason): categories whose fit was graded "review" (C1) in
+    #: that training window and so were never projected for it -- excluded from ``errors`` /
+    #: ``summary`` for that window rather than silently dropped. Empty on the illustrative data
+    #: (see the module docstring); the module docstring's own worst-case check keeps it that way.
+    skipped: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     @property
     def missed(self) -> pd.DataFrame:
@@ -325,6 +342,20 @@ class BacktestResult:
                     ],
                 ),
             ]
+        if not self.skipped.empty:
+            lines += [
+                "",
+                "### Categories skipped (fit graded for review; the engine refuses to project it)",
+                "",
+                _md_table(
+                    self.skipped,
+                    [
+                        ("train_window", "window", ""),
+                        ("category_code", "category", ""),
+                        ("reason", "reason", ""),
+                    ],
+                ),
+            ]
         return "\n".join(lines)
 
 
@@ -385,6 +416,7 @@ def run_backtest(
 
     err_rows: list[dict[str, Any]] = []
     fit_rows: list[dict[str, Any]] = []
+    skip_rows: list[dict[str, Any]] = []
     for window, wcases in by_window.items():
         scratch = DerivationLedger()
         t0 = window[1]
@@ -399,6 +431,19 @@ def run_backtest(
                 "train_window": f"{window[0]}-{window[1]}", "category_code": code,
                 "alpha": f.alpha, "beta": f.beta, "v": f.valorization_rate, "r_squared": f.r_squared,
             })
+
+        # C1: project_scenario refuses a "review"-graded fit outright (ValueError) -- correct for
+        # the live plan, wrong here, where the whole point is to measure fits that may be weak.
+        # Drop them from what is projected for THIS window only, and say so, rather than letting
+        # one bad category in one window crash every other (category, horizon) cell.
+        usable_fits = {code: f for code, f in fits.items() if f.quality != "review"}
+        for code, f in fits.items():
+            if f.quality == "review":
+                skip_rows.append({
+                    "train_window": f"{window[0]}-{window[1]}", "category_code": code,
+                    "reason": f.quality_reason or "graded for review",
+                })
+        cost_codes_here = [c for c in cost_codes if c in usable_fits]
 
         # depreciation of a known year is source data: anchor it as actual:DEPR:{year}
         depr_keys: dict[int, str] = {}
@@ -422,7 +467,7 @@ def run_backtest(
                             inputs={"year": y, "value": float(actual_rev.loc[y]), "category_code": revenue_code})
             act_keys[y] = k
         plan_a = project_scenario(
-            fits, actual_rev, t0=t0, scenario=f"bt:{window[0]}-{window[1]}:{BASIS_ACTUAL_REVENUE}",
+            usable_fits, actual_rev, t0=t0, scenario=f"bt:{window[0]}-{window[1]}:{BASIS_ACTUAL_REVENUE}",
             depreciation=depr, ledger=scratch, revenue_path_keys=act_keys, revenue_path_label="actual",
             depreciation_keys=depr_keys, revenue_code=revenue_code, component_code=component_code,
         )
@@ -431,7 +476,7 @@ def run_backtest(
             wide, window, (t0 + 1, targets[-1]), ledger=scratch, revenue_code=revenue_code
         ).loc[targets]
         plan_d = project_scenario(
-            fits, default_rev, t0=t0, scenario=f"bt:{window[0]}-{window[1]}:{BASIS_DEFAULT_REVENUE}",
+            usable_fits, default_rev, t0=t0, scenario=f"bt:{window[0]}-{window[1]}:{BASIS_DEFAULT_REVENUE}",
             depreciation=depr, ledger=scratch,
             revenue_path_keys={y: default_revenue_key(y) for y in targets},
             revenue_path_label="valorized", depreciation_keys=depr_keys,
@@ -440,7 +485,7 @@ def run_backtest(
         scratch.validate()
 
         for basis, plan in ((BASIS_ACTUAL_REVENUE, plan_a), (BASIS_DEFAULT_REVENUE, plan_d)):
-            codes = cost_codes if basis == BASIS_ACTUAL_REVENUE else [revenue_code, *cost_codes]
+            codes = cost_codes_here if basis == BASIS_ACTUAL_REVENUE else [revenue_code, *cost_codes_here]
             for code in codes:
                 sel = plan[plan["category_code"] == code].set_index("year")["value"]
                 for y in targets:
@@ -484,4 +529,5 @@ def run_backtest(
         threshold_low=float(threshold_low),
         threshold_high=float(threshold_high),
         fits=pd.DataFrame(fit_rows, columns=["train_window", "category_code", "alpha", "beta", "v", "r_squared"]),
+        skipped=pd.DataFrame(skip_rows, columns=["train_window", "category_code", "reason"]),
     )

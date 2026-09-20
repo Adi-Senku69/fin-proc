@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from nvplan import config
 from nvplan.core import DerivationLedger, to_wide
+from nvplan.core import kpi
 from nvplan.core.backtest import BacktestCase, BacktestResult, run_backtest
 from nvplan.core.deviation import compute_deviation
 from nvplan.db.models import (
@@ -303,6 +304,96 @@ def statement_consistency(session: Session, scen: Scenario, tol: float = 1e-6) -
     return problems
 
 
+# --------------------------------------------------------------------------- kpis (C2)
+
+#: Which KPI input names are read off a figure that ultimately rolls forward from the opening
+#: balance sheet (bs_mapping.yaml's ``opening_balance_sheet`` -- itself an assumption, not a
+#: measured position; see nvplan.core.statements). P&L-only inputs (revenue, total_costs, ebit,
+#: personnel, external) are not affected by the opening position and are excluded.
+BALANCE_SHEET_KPI_INPUTS: frozenset[str] = frozenset(
+    {"cash", "receivables", "payables", "equity", "total_assets", "operating_cf", "investment"}
+)
+
+
+def _kpi_inputs_by_year(session: Session, scen: Scenario) -> dict[int, dict[str, float]]:
+    """Assemble the named figures ``nvplan.core.kpi.CATALOGUE`` draws on, per plan year, from the
+    persisted PL / BS / CF lines of one scenario.
+
+    Only years with a P&L row are returned: the balance sheet also carries one extra row for the
+    opening year (``first plan year - 1``, ``nvplan.core.statements.build_bs``'s
+    ``mapping_ref="opening_balance_sheet"``), which is not a plan year the KPI report claims to
+    cover -- ``test_statements.py`` already excludes it from the P&L's own ``years``, and this
+    does the same rather than silently reporting one extra (partial) year of KPIs nobody asked for.
+
+    Kept in one place, reading only ``nvplan.core.kpi.STATEMENT_INPUTS``, so a KPI definition can
+    only reference a figure this function actually supplies -- never a name that happens to look
+    plausible. ``investment`` (``nvplan.core.kpi.DERIVED_INPUTS``) is the one figure the statement
+    chain does not carry directly: the CF frame only has the sign-flipped ``investing_cf``
+    (``investing_cf = -capex``), so it is derived here, once, rather than every KPI needing to
+    know the sign convention.
+    """
+    lines = session.scalars(select(StatementLine).where(StatementLine.scenario_id == scen.id)).all()
+    by_year: dict[int, dict[str, float]] = {}
+    pl_years: set[int] = set()
+    for sl in lines:
+        by_year.setdefault(sl.year, {})[sl.line_code] = sl.value
+        if sl.statement is Statement.pl:
+            pl_years.add(sl.year)
+    inputs: dict[int, dict[str, float]] = {}
+    for year in pl_years:
+        values = by_year[year]
+        row = {name: values[name] for name in kpi.STATEMENT_INPUTS if name in values}
+        if "investing_cf" in values:
+            row["investment"] = -values["investing_cf"]
+        inputs[year] = row
+    return inputs
+
+
+def kpi_grid(session: Session, kind: str | ScenarioKind = "base", scenario_id: int | None = None) -> dict[str, Any]:
+    """The Kennzahlen: ratios derived from the persisted statements of one scenario.
+
+    A category is a sum, a KPI is a ratio, and every value carries the inputs it was computed
+    from and the threshold applied (``nvplan.core.kpi``), because a traffic light whose standard
+    is invisible is a decoration. A definition whose inputs are not (yet) all persisted for a
+    year is skipped for that year rather than raising (``nvplan.core.kpi.evaluate_all``'s own
+    rule); a definition with no computable year at all is left out of the response entirely.
+    """
+    scen = latest_scenario(session, kind, scenario_id)
+    inputs_by_year = _kpi_inputs_by_year(session, scen)
+    years = sorted(inputs_by_year)
+    illustrative = illustrative_flag(session)
+
+    kpis: list[dict[str, Any]] = []
+    for definition in kpi.CATALOGUE:
+        values: list[dict[str, Any]] = []
+        for year in years:
+            try:
+                computed = kpi.evaluate(definition, inputs_by_year[year], year)
+            except kpi.MissingInputError:
+                continue
+            values.append({"year": year, "value": computed.value, "status": computed.status.value})
+        if not values:
+            continue
+        used_inputs = sorted({*definition.numerator, *definition.denominator})
+        kpis.append({
+            "code": definition.code, "name": definition.name, "quadrant": definition.quadrant.value,
+            "unit": definition.unit, "direction": definition.direction.value,
+            "description": definition.description, "formula": definition.formula(), "inputs": used_inputs,
+            "rests_on_opening_position": illustrative and bool(BALANCE_SHEET_KPI_INPUTS & set(used_inputs)),
+            "thresholds": (
+                None if definition.thresholds is None
+                else {"good": definition.thresholds.good, "warn": definition.thresholds.warn,
+                      "source": definition.thresholds.source}
+            ),
+            "values": values,
+        })
+
+    return {
+        "scenario_id": scen.id, "scenario_kind": scen.kind.value, "scenario_label": scen.label,
+        "illustrative": illustrative, "years": years, "kpis": kpis,
+    }
+
+
 # --------------------------------------------------------------------------- ai records
 
 
@@ -377,6 +468,7 @@ def backtest_report(session: Session, window_len: int = 5) -> dict[str, Any]:
         "summary": _records(res.summary),
         "summary_default_path": _records(res.summary_default_path),
         "fits": _records(res.fits),
+        "skipped": _records(res.skipped),
         "markdown": res.to_markdown(),
         "illustrative": illustrative_flag(session),
     }

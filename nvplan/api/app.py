@@ -267,6 +267,12 @@ def _register(app: FastAPI) -> None:
                    scenario_id: int | None = None, session: Session = Depends(get_session)):
         return q.statement_grid(session, scenario_kind, statement, scenario_id)
 
+    # ---- kpis (C2) ---------------------------------------------------------------
+
+    @app.get("/kpis/{scenario_kind}", response_model=S.KpiGridOut)
+    def kpis(scenario_kind: str, scenario_id: int | None = None, session: Session = Depends(get_session)):
+        return q.kpi_grid(session, scenario_kind, scenario_id)
+
     # ---- trace -----------------------------------------------------------------
 
     @app.get("/trace/plan-value/{plan_value_id}", response_model=None)

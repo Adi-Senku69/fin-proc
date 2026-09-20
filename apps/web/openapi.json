@@ -1,0 +1,3370 @@
+{
+  "components": {
+    "schemas": {
+      "AiRecordDetailOut": {
+        "description": "One record incl. the per-model-call audit log (GET /ai/records/{id} only; the list stays light).",
+        "properties": {
+          "call_log": {
+            "description": "One entry per model call: the literal system prompt + messages sent, the response, approx tokens, and summarization / eviction / cleared-tool-result markers.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Call Log",
+            "type": "array"
+          },
+          "category_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Code"
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "confirmed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed By"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "model_version": {
+            "title": "Model Version",
+            "type": "string"
+          },
+          "note_ids": {
+            "description": "external notes written by this record (env scan)",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Note Ids",
+            "type": "array"
+          },
+          "prompt_text": {
+            "title": "Prompt Text",
+            "type": "string"
+          },
+          "proposed_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Value"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "response_text": {
+            "title": "Response Text",
+            "type": "string"
+          },
+          "scenario_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "total_usage": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Real provider token usage summed over every model call of the run (input/output/total plus cache_read/cache_creation when reported), recomputed from call_log by nvplan.ai.audit.total_usage. Empty mapping with the fake model (no usage metadata); null when no call log was persisted.",
+            "title": "Total Usage"
+          },
+          "touchpoint": {
+            "title": "Touchpoint",
+            "type": "string"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          }
+        },
+        "required": [
+          "id",
+          "touchpoint",
+          "status",
+          "model_version",
+          "proposed_value",
+          "scenario_id",
+          "category_code",
+          "year",
+          "rationale",
+          "prompt_text",
+          "response_text",
+          "confirmed_by",
+          "confirmed_at",
+          "created_at"
+        ],
+        "title": "AiRecordDetailOut",
+        "type": "object"
+      },
+      "AiRecordOut": {
+        "properties": {
+          "category_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Code"
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "confirmed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed By"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "model_version": {
+            "title": "Model Version",
+            "type": "string"
+          },
+          "note_ids": {
+            "description": "external notes written by this record (env scan)",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Note Ids",
+            "type": "array"
+          },
+          "prompt_text": {
+            "title": "Prompt Text",
+            "type": "string"
+          },
+          "proposed_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Value"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "response_text": {
+            "title": "Response Text",
+            "type": "string"
+          },
+          "scenario_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "touchpoint": {
+            "title": "Touchpoint",
+            "type": "string"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          }
+        },
+        "required": [
+          "id",
+          "touchpoint",
+          "status",
+          "model_version",
+          "proposed_value",
+          "scenario_id",
+          "category_code",
+          "year",
+          "rationale",
+          "prompt_text",
+          "response_text",
+          "confirmed_by",
+          "confirmed_at",
+          "created_at"
+        ],
+        "title": "AiRecordOut",
+        "type": "object"
+      },
+      "AssistantAskIn": {
+        "description": "``POST /assistant/ask`` (UI.md Part 3).",
+        "properties": {
+          "question": {
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "scenario_kind": {
+            "default": "base",
+            "title": "Scenario Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AssistantAskIn",
+        "type": "object"
+      },
+      "BacktestOut": {
+        "properties": {
+          "fits": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Fits",
+            "type": "array"
+          },
+          "illustrative": {
+            "title": "Illustrative",
+            "type": "boolean"
+          },
+          "markdown": {
+            "title": "Markdown",
+            "type": "string"
+          },
+          "n_cases": {
+            "title": "N Cases",
+            "type": "integer"
+          },
+          "skipped": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Skipped",
+            "type": "array"
+          },
+          "summary": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Summary",
+            "type": "array"
+          },
+          "summary_default_path": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Summary Default Path",
+            "type": "array"
+          },
+          "thresholds": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Thresholds",
+            "type": "object"
+          }
+        },
+        "required": [
+          "n_cases",
+          "thresholds",
+          "summary",
+          "summary_default_path",
+          "fits",
+          "skipped",
+          "markdown",
+          "illustrative"
+        ],
+        "title": "BacktestOut",
+        "type": "object"
+      },
+      "BacktestYearOut": {
+        "properties": {
+          "fits": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Fits",
+            "type": "array"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "train_window": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Train Window",
+            "type": "array"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "year",
+          "train_window",
+          "rows",
+          "fits",
+          "note"
+        ],
+        "title": "BacktestYearOut",
+        "type": "object"
+      },
+      "BrainReindexOut": {
+        "description": "Result of rebuilding the claim index from ``brain/``: every candidate markdown\nfile is re-read and its row recomputed. Nothing is imported from outside the\nrepository - the files are already the record, and this only refreshes the\ndatabase's copy of them (PLATFORM.md \u00a73). ``indexed`` counts files whose row was\n(re)written this run; ``skipped_unchanged`` counts files whose stored hash already\nmatched and were left alone; ``rejected`` counts files a strict reindex refused to\nturn into a row at all.",
+        "properties": {
+          "files_seen": {
+            "title": "Files Seen",
+            "type": "integer"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/FindingOut"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "indexed": {
+            "description": "files whose row was (re)written this run",
+            "title": "Indexed",
+            "type": "integer"
+          },
+          "rejected": {
+            "description": "paths rejected under strict reindexing",
+            "items": {
+              "type": "string"
+            },
+            "title": "Rejected",
+            "type": "array"
+          },
+          "skipped_unchanged": {
+            "description": "files already current in the index; not rewritten",
+            "title": "Skipped Unchanged",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "files_seen",
+          "indexed",
+          "skipped_unchanged"
+        ],
+        "title": "BrainReindexOut",
+        "type": "object"
+      },
+      "BrainSweepOut": {
+        "description": "The sweep (PLATFORM.md \u00a712.5/\u00a712.6, work package B4): what is stale or newly true across\n``brain/``, read-only - nothing here has ever written a file or changed a claim's status (see\n``bridge.sweep``'s own module docstring).",
+        "properties": {
+          "computed_derivation_findings": {
+            "items": {
+              "$ref": "#/components/schemas/FindingOut"
+            },
+            "title": "Computed Derivation Findings",
+            "type": "array"
+          },
+          "reversal_verdicts": {
+            "items": {
+              "$ref": "#/components/schemas/ReversalVerdictOut"
+            },
+            "title": "Reversal Verdicts",
+            "type": "array"
+          },
+          "structural_findings": {
+            "description": "unresolved_link / effect_not_wired, reused from brainkit.validate",
+            "items": {
+              "$ref": "#/components/schemas/FindingOut"
+            },
+            "title": "Structural Findings",
+            "type": "array"
+          },
+          "supersession_findings": {
+            "items": {
+              "$ref": "#/components/schemas/FindingOut"
+            },
+            "title": "Supersession Findings",
+            "type": "array"
+          }
+        },
+        "title": "BrainSweepOut",
+        "type": "object"
+      },
+      "BrainValidateOut": {
+        "properties": {
+          "clean": {
+            "title": "Clean",
+            "type": "boolean"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/FindingOut"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/FindingOut"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "clean"
+        ],
+        "title": "BrainValidateOut",
+        "type": "object"
+      },
+      "BridgeApplyIn": {
+        "properties": {
+          "created_by": {
+            "default": "bridge",
+            "title": "Created By",
+            "type": "string"
+          },
+          "label_suffix": {
+            "default": "",
+            "title": "Label Suffix",
+            "type": "string"
+          }
+        },
+        "title": "BridgeApplyIn",
+        "type": "object"
+      },
+      "BridgeApplyOut": {
+        "properties": {
+          "applied": {
+            "description": "plan years affected by a decided effect",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Applied",
+            "type": "array"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "set (with plan_run=None) when there was nothing decided to apply",
+            "title": "Message"
+          },
+          "plan_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanRunOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shadowed": {
+            "description": "claim ids superseded by a newer decision on the same year",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Shadowed",
+            "type": "array"
+          }
+        },
+        "title": "BridgeApplyOut",
+        "type": "object"
+      },
+      "ClaimDetailOut": {
+        "properties": {
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "effect": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffectOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceOut"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "has_effect": {
+            "title": "Has Effect",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimLinkOut"
+            },
+            "title": "Links",
+            "type": "array"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "reversal_condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reversal Condition"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "slug",
+          "title",
+          "status",
+          "date",
+          "path",
+          "has_effect"
+        ],
+        "title": "ClaimDetailOut",
+        "type": "object"
+      },
+      "ClaimLinkOut": {
+        "properties": {
+          "other_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Other Slug"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "relation"
+        ],
+        "title": "ClaimLinkOut",
+        "type": "object"
+      },
+      "ClaimOut": {
+        "properties": {
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "has_effect": {
+            "title": "Has Effect",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "slug",
+          "title",
+          "status",
+          "date",
+          "path",
+          "has_effect"
+        ],
+        "title": "ClaimOut",
+        "type": "object"
+      },
+      "ConfirmIn": {
+        "properties": {
+          "confirmed_by": {
+            "minLength": 1,
+            "title": "Confirmed By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirmed_by"
+        ],
+        "title": "ConfirmIn",
+        "type": "object"
+      },
+      "ConfirmOut": {
+        "properties": {
+          "record": {
+            "$ref": "#/components/schemas/AiRecordOut"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanRunOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "record",
+          "run"
+        ],
+        "title": "ConfirmOut",
+        "type": "object"
+      },
+      "DecidedEffectOut": {
+        "properties": {
+          "category_code": {
+            "title": "Category Code",
+            "type": "string"
+          },
+          "claim_id": {
+            "title": "Claim Id",
+            "type": "integer"
+          },
+          "decided_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided On"
+          },
+          "decision_slug": {
+            "title": "Decision Slug",
+            "type": "string"
+          },
+          "decision_title": {
+            "title": "Decision Title",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "claim_id",
+          "decision_slug",
+          "decision_title",
+          "category_code",
+          "year",
+          "value",
+          "unit"
+        ],
+        "title": "DecidedEffectOut",
+        "type": "object"
+      },
+      "DeviationExplanationIn": {
+        "properties": {
+          "scenario_kind": {
+            "default": "base",
+            "title": "Scenario Kind",
+            "type": "string"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "year"
+        ],
+        "title": "DeviationExplanationIn",
+        "type": "object"
+      },
+      "DeviationOut": {
+        "properties": {
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "scenario_id": {
+            "title": "Scenario Id",
+            "type": "integer"
+          },
+          "scenario_kind": {
+            "title": "Scenario Kind",
+            "type": "string"
+          },
+          "scenario_label": {
+            "title": "Scenario Label",
+            "type": "string"
+          },
+          "years": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Years",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scenario_id",
+          "scenario_kind",
+          "scenario_label",
+          "years",
+          "rows",
+          "note"
+        ],
+        "title": "DeviationOut",
+        "type": "object"
+      },
+      "EffectOut": {
+        "properties": {
+          "category_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Code"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          }
+        },
+        "title": "EffectOut",
+        "type": "object"
+      },
+      "EnvScanIn": {
+        "properties": {
+          "positions_subset": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Positions Subset"
+          }
+        },
+        "title": "EnvScanIn",
+        "type": "object"
+      },
+      "EvidenceOut": {
+        "properties": {
+          "resolved": {
+            "title": "Resolved",
+            "type": "boolean"
+          },
+          "section": {
+            "title": "Section",
+            "type": "string"
+          },
+          "tag_kind": {
+            "title": "Tag Kind",
+            "type": "string"
+          },
+          "tag_raw": {
+            "title": "Tag Raw",
+            "type": "string"
+          },
+          "target_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Path"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "section",
+          "text",
+          "tag_kind",
+          "tag_raw",
+          "resolved"
+        ],
+        "title": "EvidenceOut",
+        "type": "object"
+      },
+      "FindingOut": {
+        "description": "``brainkit.validate.Finding``, serialised. ``path`` is relative to the repository\nroot, never absolute (UI.md Part 1).",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Line"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "code",
+          "message",
+          "severity"
+        ],
+        "title": "FindingOut",
+        "type": "object"
+      },
+      "GridCell": {
+        "properties": {
+          "ai_record_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Record Id"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "plan_value_id": {
+            "title": "Plan Value Id",
+            "type": "integer"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "value",
+          "path",
+          "plan_value_id"
+        ],
+        "title": "GridCell",
+        "type": "object"
+      },
+      "GridRow": {
+        "properties": {
+          "category_code": {
+            "title": "Category Code",
+            "type": "string"
+          },
+          "cells": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/GridCell"
+            },
+            "title": "Cells",
+            "type": "object"
+          },
+          "is_component": {
+            "title": "Is Component",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category_code",
+          "name",
+          "kind",
+          "is_component",
+          "cells"
+        ],
+        "title": "GridRow",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthOut": {
+        "properties": {
+          "db_url": {
+            "title": "Db Url",
+            "type": "string"
+          },
+          "illustrative": {
+            "title": "Illustrative",
+            "type": "boolean"
+          },
+          "n_actuals": {
+            "title": "N Actuals",
+            "type": "integer"
+          },
+          "n_scenarios": {
+            "title": "N Scenarios",
+            "type": "integer"
+          },
+          "status": {
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "db_url",
+          "illustrative",
+          "n_actuals",
+          "n_scenarios"
+        ],
+        "title": "HealthOut",
+        "type": "object"
+      },
+      "ImpactRowOut": {
+        "properties": {
+          "category_code": {
+            "title": "Category Code",
+            "type": "string"
+          },
+          "displaced_default": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "the default value this decision replaced, when the derivation recorded one",
+            "title": "Displaced Default"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "plan_value_id": {
+            "title": "Plan Value Id",
+            "type": "integer"
+          },
+          "scenario_kind": {
+            "title": "Scenario Kind",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plan_value_id",
+          "scenario_kind",
+          "category_code",
+          "year",
+          "value",
+          "path"
+        ],
+        "title": "ImpactRowOut",
+        "type": "object"
+      },
+      "IngestOut": {
+        "properties": {
+          "illustrative": {
+            "title": "Illustrative",
+            "type": "boolean"
+          },
+          "notes_seeded": {
+            "default": 0,
+            "title": "Notes Seeded",
+            "type": "integer"
+          },
+          "rows": {
+            "title": "Rows",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "source_label": {
+            "title": "Source Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rows",
+          "source_label",
+          "source",
+          "illustrative"
+        ],
+        "title": "IngestOut",
+        "type": "object"
+      },
+      "KpiGridOut": {
+        "properties": {
+          "illustrative": {
+            "title": "Illustrative",
+            "type": "boolean"
+          },
+          "kpis": {
+            "items": {
+              "$ref": "#/components/schemas/KpiOut"
+            },
+            "title": "Kpis",
+            "type": "array"
+          },
+          "scenario_id": {
+            "title": "Scenario Id",
+            "type": "integer"
+          },
+          "scenario_kind": {
+            "title": "Scenario Kind",
+            "type": "string"
+          },
+          "scenario_label": {
+            "title": "Scenario Label",
+            "type": "string"
+          },
+          "years": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Years",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scenario_id",
+          "scenario_kind",
+          "scenario_label",
+          "illustrative",
+          "years",
+          "kpis"
+        ],
+        "title": "KpiGridOut",
+        "type": "object"
+      },
+      "KpiOut": {
+        "description": "One KPI across the scenario's years, with everything needed to defend it.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "direction": {
+            "title": "Direction",
+            "type": "string"
+          },
+          "formula": {
+            "description": "Rendered from the same fields nvplan.core.kpi.evaluate reads",
+            "title": "Formula",
+            "type": "string"
+          },
+          "inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Inputs",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "quadrant": {
+            "title": "Quadrant",
+            "type": "string"
+          },
+          "rests_on_opening_position": {
+            "default": false,
+            "description": "True when this KPI draws on the balance sheet or cash flow while the plan's actuals are still labelled ILLUSTRATIVE, so the opening balance sheet those statements roll forward from is an assumption, not a measured position. The arithmetic is sound; the position underneath it is not yet real data.",
+            "title": "Rests On Opening Position",
+            "type": "boolean"
+          },
+          "thresholds": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KpiThresholdsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/KpiValueOut"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "quadrant",
+          "unit",
+          "direction",
+          "description",
+          "formula",
+          "inputs",
+          "values"
+        ],
+        "title": "KpiOut",
+        "type": "object"
+      },
+      "KpiThresholdsOut": {
+        "properties": {
+          "good": {
+            "title": "Good",
+            "type": "number"
+          },
+          "source": {
+            "description": "Where the threshold came from -- assumptions say so",
+            "title": "Source",
+            "type": "string"
+          },
+          "warn": {
+            "title": "Warn",
+            "type": "number"
+          }
+        },
+        "required": [
+          "good",
+          "warn",
+          "source"
+        ],
+        "title": "KpiThresholdsOut",
+        "type": "object"
+      },
+      "KpiValueOut": {
+        "properties": {
+          "status": {
+            "description": "green | amber | red | unknown -- never green without evidence",
+            "title": "Status",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "None where the KPI is undefined, e.g. divide by zero",
+            "title": "Value"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "year",
+          "value",
+          "status"
+        ],
+        "title": "KpiValueOut",
+        "type": "object"
+      },
+      "ParameterRow": {
+        "properties": {
+          "alpha": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alpha"
+          },
+          "beta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beta"
+          },
+          "calc_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calc Version"
+          },
+          "category_code": {
+            "title": "Category Code",
+            "type": "string"
+          },
+          "growth_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Growth Rate"
+          },
+          "parameter_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parameter Id"
+          },
+          "r_squared": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "R Squared"
+          },
+          "valorization_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valorization Rate"
+          },
+          "window_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window From"
+          },
+          "window_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window To"
+          }
+        },
+        "required": [
+          "category_code"
+        ],
+        "title": "ParameterRow",
+        "type": "object"
+      },
+      "PlanGridOut": {
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "illustrative": {
+            "title": "Illustrative",
+            "type": "boolean"
+          },
+          "parameters": {
+            "items": {
+              "$ref": "#/components/schemas/ParameterRow"
+            },
+            "title": "Parameters",
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/GridRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "scenario_id": {
+            "title": "Scenario Id",
+            "type": "integer"
+          },
+          "scenario_kind": {
+            "title": "Scenario Kind",
+            "type": "string"
+          },
+          "scenario_label": {
+            "title": "Scenario Label",
+            "type": "string"
+          },
+          "unit": {
+            "default": "k EUR",
+            "title": "Unit",
+            "type": "string"
+          },
+          "years": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Years",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scenario_id",
+          "scenario_kind",
+          "scenario_label",
+          "created_by",
+          "created_at",
+          "illustrative",
+          "years",
+          "rows",
+          "parameters"
+        ],
+        "title": "PlanGridOut",
+        "type": "object"
+      },
+      "PlanRunIn": {
+        "properties": {
+          "created_by": {
+            "minLength": 1,
+            "title": "Created By",
+            "type": "string"
+          },
+          "label_suffix": {
+            "default": "",
+            "title": "Label Suffix",
+            "type": "string"
+          }
+        },
+        "required": [
+          "created_by"
+        ],
+        "title": "PlanRunIn",
+        "type": "object"
+      },
+      "PlanRunOut": {
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "n_derivations": {
+            "title": "N Derivations",
+            "type": "integer"
+          },
+          "n_plan_values": {
+            "title": "N Plan Values",
+            "type": "integer"
+          },
+          "n_statement_lines": {
+            "title": "N Statement Lines",
+            "type": "integer"
+          },
+          "parameter_ids": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Parameter Ids",
+            "type": "object"
+          },
+          "scenario_ids": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Scenario Ids",
+            "type": "object"
+          }
+        },
+        "required": [
+          "scenario_ids",
+          "parameter_ids",
+          "n_derivations",
+          "n_plan_values",
+          "n_statement_lines",
+          "label",
+          "created_at"
+        ],
+        "title": "PlanRunOut",
+        "type": "object"
+      },
+      "RejectIn": {
+        "properties": {
+          "rejected_by": {
+            "minLength": 1,
+            "title": "Rejected By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rejected_by"
+        ],
+        "title": "RejectIn",
+        "type": "object"
+      },
+      "RevenueProposalIn": {
+        "properties": {
+          "scenario_kind": {
+            "default": "base",
+            "title": "Scenario Kind",
+            "type": "string"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "year"
+        ],
+        "title": "RevenueProposalIn",
+        "type": "object"
+      },
+      "RevenueProposalOut": {
+        "properties": {
+          "default_value": {
+            "title": "Default Value",
+            "type": "number"
+          },
+          "record": {
+            "$ref": "#/components/schemas/AiRecordOut"
+          }
+        },
+        "required": [
+          "record",
+          "default_value"
+        ],
+        "title": "RevenueProposalOut",
+        "type": "object"
+      },
+      "ReversalVerdictOut": {
+        "description": "``bridge.sweep.ReversalVerdict``, serialised. ``tripped`` is ``true``/``false`` only for a\nmechanically evaluated condition (``mechanism`` is ``\"r_squared\"`` or ``\"plan_value\"``);\n``null`` means advisory - the model may have looked at it (``detail``), but nothing decided\nwhether it has tripped (PLATFORM.md \u00a712.1/\u00a712.5 - only a human does).",
+        "properties": {
+          "claim_id": {
+            "title": "Claim Id",
+            "type": "integer"
+          },
+          "condition_text": {
+            "title": "Condition Text",
+            "type": "string"
+          },
+          "decision_slug": {
+            "title": "Decision Slug",
+            "type": "string"
+          },
+          "decision_title": {
+            "title": "Decision Title",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "mechanism": {
+            "title": "Mechanism",
+            "type": "string"
+          },
+          "tripped": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tripped"
+          }
+        },
+        "required": [
+          "claim_id",
+          "decision_slug",
+          "decision_title",
+          "condition_text",
+          "mechanism",
+          "tripped",
+          "detail"
+        ],
+        "title": "ReversalVerdictOut",
+        "type": "object"
+      },
+      "ScenarioOut": {
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "created_by",
+          "created_at"
+        ],
+        "title": "ScenarioOut",
+        "type": "object"
+      },
+      "StatementCell": {
+        "properties": {
+          "mapping_ref": {
+            "title": "Mapping Ref",
+            "type": "string"
+          },
+          "statement_line_id": {
+            "title": "Statement Line Id",
+            "type": "integer"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "value",
+          "statement_line_id",
+          "mapping_ref"
+        ],
+        "title": "StatementCell",
+        "type": "object"
+      },
+      "StatementGridOut": {
+        "properties": {
+          "consistency": {
+            "description": "BS balance / cash-tie problems; empty = clean",
+            "items": {
+              "type": "string"
+            },
+            "title": "Consistency",
+            "type": "array"
+          },
+          "illustrative": {
+            "title": "Illustrative",
+            "type": "boolean"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/StatementRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "scenario_id": {
+            "title": "Scenario Id",
+            "type": "integer"
+          },
+          "scenario_kind": {
+            "title": "Scenario Kind",
+            "type": "string"
+          },
+          "scenario_label": {
+            "title": "Scenario Label",
+            "type": "string"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          },
+          "unit": {
+            "default": "k EUR",
+            "title": "Unit",
+            "type": "string"
+          },
+          "years": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Years",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scenario_id",
+          "scenario_kind",
+          "scenario_label",
+          "statement",
+          "illustrative",
+          "years",
+          "rows"
+        ],
+        "title": "StatementGridOut",
+        "type": "object"
+      },
+      "StatementRow": {
+        "properties": {
+          "cells": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StatementCell"
+            },
+            "title": "Cells",
+            "type": "object"
+          },
+          "line_code": {
+            "title": "Line Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "line_code",
+          "cells"
+        ],
+        "title": "StatementRow",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Deterministic planning engine with traceable derivations and three advisory AI touchpoints. Figures labelled ILLUSTRATIVE are generated dummy data.",
+    "title": "NewVision planning PoC",
+    "version": "0.0.1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/ai/deviation-explanation": {
+      "post": {
+        "operationId": "ai_deviation_ai_deviation_explanation_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviationExplanationIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiRecordOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ai Deviation"
+      }
+    },
+    "/ai/env-scan": {
+      "post": {
+        "operationId": "ai_env_scan_ai_env_scan_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvScanIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiRecordOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ai Env Scan"
+      }
+    },
+    "/ai/records": {
+      "get": {
+        "operationId": "ai_records_ai_records_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "touchpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Touchpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AiRecordOut"
+                  },
+                  "title": "Response Ai Records Ai Records Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ai Records"
+      }
+    },
+    "/ai/records/{record_id}": {
+      "get": {
+        "operationId": "ai_record_ai_records__record_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "title": "Record Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiRecordDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ai Record"
+      }
+    },
+    "/ai/records/{record_id}/confirm": {
+      "post": {
+        "operationId": "ai_confirm_ai_records__record_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "title": "Record Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfirmOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ai Confirm"
+      }
+    },
+    "/ai/records/{record_id}/reject": {
+      "post": {
+        "operationId": "ai_reject_ai_records__record_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "title": "Record Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiRecordOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ai Reject"
+      }
+    },
+    "/ai/revenue-proposal": {
+      "post": {
+        "operationId": "ai_revenue_proposal_ai_revenue_proposal_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevenueProposalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevenueProposalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ai Revenue Proposal"
+      }
+    },
+    "/assistant/ask": {
+      "post": {
+        "operationId": "assistant_ask_assistant_ask_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantAskIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assistant Ask"
+      }
+    },
+    "/backtest": {
+      "get": {
+        "operationId": "backtest_backtest_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window_len",
+            "required": false,
+            "schema": {
+              "default": 5,
+              "minimum": 3,
+              "title": "Window Len",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BacktestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backtest"
+      }
+    },
+    "/brain/claims": {
+      "get": {
+        "operationId": "brain_claims_brain_claims_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ClaimOut"
+                  },
+                  "title": "Response Brain Claims Brain Claims Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Brain Claims"
+      }
+    },
+    "/brain/claims/{claim_id}": {
+      "get": {
+        "operationId": "brain_claim_detail_brain_claims__claim_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "title": "Claim Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Brain Claim Detail"
+      }
+    },
+    "/brain/claims/{claim_id}/impact": {
+      "get": {
+        "operationId": "brain_claim_impact_brain_claims__claim_id__impact_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "title": "Claim Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ImpactRowOut"
+                  },
+                  "title": "Response Brain Claim Impact Brain Claims  Claim Id  Impact Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Brain Claim Impact"
+      }
+    },
+    "/brain/effects": {
+      "get": {
+        "operationId": "brain_effects_brain_effects_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DecidedEffectOut"
+                  },
+                  "title": "Response Brain Effects Brain Effects Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Brain Effects"
+      }
+    },
+    "/brain/reindex": {
+      "post": {
+        "operationId": "brain_reindex_brain_reindex_post",
+        "parameters": [
+          {
+            "description": "default: the repository's brain/ directory",
+            "in": "query",
+            "name": "brain_root",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "default: the repository's brain/ directory",
+              "title": "Brain Root"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrainReindexOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Brain Reindex"
+      }
+    },
+    "/brain/sweep": {
+      "get": {
+        "description": "PLATFORM.md \u00a712.5/\u00a712.6 (work package B4): the sweep, read-only. Deliberately takes no\nmodel from ``app.state.model_factory`` / ``resolve_model`` above - ``bridge.sweep.\nrun_sweep`` resolves its own default via ``nvplan.ai.agents.resolve_model(None,\nprovider=config.AI_BRAIN_WRITE_PROVIDER)``, the same offline-by-default path B2/B3 use, so\nthis route can never go live just because a credential sits in ``.env`` (see that\nfunction's own docstring).",
+        "operationId": "brain_sweep_brain_sweep_get",
+        "parameters": [
+          {
+            "description": "default: the repository's brain/ directory",
+            "in": "query",
+            "name": "brain_root",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "default: the repository's brain/ directory",
+              "title": "Brain Root"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrainSweepOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Brain Sweep"
+      }
+    },
+    "/brain/validate": {
+      "get": {
+        "operationId": "brain_validate_brain_validate_get",
+        "parameters": [
+          {
+            "description": "default: the repository's brain/ directory",
+            "in": "query",
+            "name": "brain_root",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "default: the repository's brain/ directory",
+              "title": "Brain Root"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrainValidateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Brain Validate"
+      }
+    },
+    "/bridge/apply": {
+      "post": {
+        "operationId": "bridge_apply_bridge_apply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BridgeApplyIn",
+                "default": {
+                  "created_by": "bridge",
+                  "label_suffix": ""
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeApplyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bridge Apply"
+      }
+    },
+    "/deviation": {
+      "get": {
+        "operationId": "deviation_deviation_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "scenario_kind",
+            "required": false,
+            "schema": {
+              "default": "base",
+              "title": "Scenario Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Year"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scenario_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scenario Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deviation"
+      }
+    },
+    "/deviation/backtest-year": {
+      "get": {
+        "operationId": "deviation_backtest_year_deviation_backtest_year_get",
+        "parameters": [
+          {
+            "description": "a year with actuals, e.g. 2025",
+            "in": "query",
+            "name": "year",
+            "required": true,
+            "schema": {
+              "description": "a year with actuals, e.g. 2025",
+              "title": "Year",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "window_len",
+            "required": false,
+            "schema": {
+              "default": 5,
+              "minimum": 3,
+              "title": "Window Len",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BacktestYearOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deviation Backtest Year"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/ingest": {
+      "post": {
+        "description": "Load actuals. Send the file as the raw request body (Content-Type text/csv or the xlsx\ntype) or point ``path`` at a file; with neither, ``data/illustrative/actuals.csv`` is loaded.",
+        "operationId": "ingest_ingest_post",
+        "parameters": [
+          {
+            "description": "Label for rows without one (required for uploads)",
+            "in": "query",
+            "name": "source_label",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Label for rows without one (required for uploads)",
+              "title": "Source Label"
+            }
+          },
+          {
+            "description": "Server-side CSV/XLSX path; default: the illustrative CSV",
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Server-side CSV/XLSX path; default: the illustrative CSV",
+              "title": "Path"
+            }
+          },
+          {
+            "description": "Also seed the illustrative external notes (once)",
+            "in": "query",
+            "name": "with_notes",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Also seed the illustrative external notes (once)",
+              "title": "With Notes",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest"
+      }
+    },
+    "/kpis/{scenario_kind}": {
+      "get": {
+        "operationId": "kpis_kpis__scenario_kind__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scenario_kind",
+            "required": true,
+            "schema": {
+              "title": "Scenario Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scenario_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scenario Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KpiGridOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Kpis"
+      }
+    },
+    "/plan/grid": {
+      "get": {
+        "operationId": "plan_grid_plan_grid_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "scenario_kind",
+            "required": false,
+            "schema": {
+              "default": "base",
+              "title": "Scenario Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scenario_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scenario Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanGridOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Plan Grid"
+      }
+    },
+    "/plan/run": {
+      "post": {
+        "operationId": "plan_run_plan_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanRunIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanRunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Plan Run"
+      }
+    },
+    "/plan/scenarios": {
+      "get": {
+        "operationId": "plan_scenarios_plan_scenarios_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ScenarioOut"
+                  },
+                  "title": "Response Plan Scenarios Plan Scenarios Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Plan Scenarios"
+      }
+    },
+    "/statements/{scenario_kind}": {
+      "get": {
+        "operationId": "statements_statements__scenario_kind__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scenario_kind",
+            "required": true,
+            "schema": {
+              "title": "Scenario Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "statement",
+            "required": false,
+            "schema": {
+              "default": "pl",
+              "pattern": "^(pl|bs|cf)$",
+              "title": "Statement",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scenario_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scenario Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatementGridOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Statements"
+      }
+    },
+    "/trace/plan-value/{plan_value_id}": {
+      "get": {
+        "operationId": "trace_pv_trace_plan_value__plan_value_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_value_id",
+            "required": true,
+            "schema": {
+              "title": "Plan Value Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "json",
+              "pattern": "^(json|text)$",
+              "title": "Format",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_depth",
+            "required": false,
+            "schema": {
+              "default": 12,
+              "title": "Max Depth",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Trace Pv"
+      }
+    },
+    "/trace/statement-line/{statement_line_id}": {
+      "get": {
+        "operationId": "trace_sl_trace_statement_line__statement_line_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "statement_line_id",
+            "required": true,
+            "schema": {
+              "title": "Statement Line Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "json",
+              "pattern": "^(json|text)$",
+              "title": "Format",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_depth",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "title": "Max Depth",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Trace Sl"
+      }
+    }
+  }
+}

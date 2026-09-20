@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pandas as pd
 import pytest
 import yaml
@@ -202,6 +203,77 @@ def test_check_consistency_detects_a_broken_sheet():
     assert any("does not balance" in p and "2027" in p for p in problems)
     assert any("delta cash" in p for p in problems)
     assert any("BS cash" in p for p in problems)
+
+
+# --------------------------------------------------------------------------- C2: the identity, not a golden case
+#
+# Every test above checks specific, hand-picked (or actual) numbers. That confirms the arithmetic
+# on those numbers, but not that the three statements articulate *by construction* -- i.e. that
+# cash, computed purely from the cash-flow statement (module docstring: "cash is NOT a balancing
+# item"), lands exactly where the balance sheet needs it to be for ANY inputs, not just the ones
+# this file happens to have chosen. This repo has no `hypothesis` dependency (not in pyproject.toml,
+# which is outside nvplan/core's ownership), so the property is exercised the same way the rest of
+# this file already generates numbers -- a seeded RNG and an explicit loop over many draws -- rather
+# than pulled in as a new library for one test.
+
+
+def _random_opening(rng) -> dict[str, float]:
+    """A random opening position that balances by construction, the same trick
+    `nvplan.core.statements.derive_opening` uses: pick every asset/liability line freely and set
+    equity to whatever makes assets == liabilities + equity, rather than trying to guess a
+    consistent equity by hand."""
+    cash = float(rng.uniform(-500.0, 3000.0))  # a negative cash position is a valid (if poor) opening
+    receivables = float(rng.uniform(0.0, 3000.0))
+    inventory = float(rng.uniform(0.0, 1000.0))
+    fixed_assets = float(rng.uniform(0.0, 5000.0))
+    payables = float(rng.uniform(0.0, 2000.0))
+    equity = cash + receivables + inventory + fixed_assets - payables
+    return {"cash": cash, "receivables": receivables, "inventory": inventory,
+            "fixed_assets": fixed_assets, "payables": payables, "equity": equity}
+
+
+def _random_period_pl(rng, year: int) -> dict[str, float]:
+    depr = float(rng.uniform(0.0, 500.0))
+    other = depr + float(rng.uniform(0.0, 1000.0))  # OTH includes DEPR, per the module docstring
+    return {
+        "REV": float(rng.uniform(500.0, 50_000.0)), "MAT": float(rng.uniform(0.0, 2000.0)),
+        "EXT": float(rng.uniform(0.0, 2000.0)), "PERS": float(rng.uniform(0.0, 20_000.0)),
+        "OTH": other, "DEPR": depr,
+    }
+
+
+@pytest.mark.parametrize("draw", range(30))
+def test_statements_balance_for_arbitrary_inputs(draw):
+    """The identity must hold generally, not just on the numbers this file happens to choose
+    (the reference brief's own framing): random revenue, costs, capex and working-capital
+    assumptions, every draw independent (seeded on ``draw`` for reproducibility), and every one
+    must balance to floating-point tolerance with zero consistency problems -- because the
+    balance sheet is never plugged, it is a consequence of the P&L and cash-flow formulas."""
+    rng = np.random.default_rng(1000 + draw)
+    years = [2026, 2027, 2028]
+    pl = {code: [] for code in ("REV", "MAT", "EXT", "PERS", "OTH", "DEPR")}
+    capex = []
+    for year in years:
+        row = _random_period_pl(rng, year)
+        for code, val in row.items():
+            pl[code].append(val)
+        capex.append(float(rng.uniform(0.0, 1500.0)))
+    mapping = {
+        "assumptions": {
+            "dso_days": float(rng.uniform(0.0, 120.0)),
+            "dpo_days": float(rng.uniform(0.0, 120.0)),
+            "inventory_days": float(rng.uniform(0.0, 60.0)),
+            "days_per_year": 365,
+        },
+        "bs": {}, "cf": {},
+    }
+    opening = _random_opening(rng)
+    capex_df = pd.DataFrame({"year": years, "capex": capex})
+
+    stmts = build_statements(_long(pl, years), capex_df, mapping, scenario="base",
+                             tax_rate=0.25, opening=opening)
+    problems = check_consistency(stmts)
+    assert problems == [], (draw, problems)
 
 
 # --------------------------------------------------------------------------- illustrative actuals 2016-2025

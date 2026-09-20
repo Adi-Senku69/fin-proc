@@ -8,8 +8,9 @@ import time
 import pytest
 from sqlalchemy.orm import sessionmaker
 
+from nvplan import config
 from nvplan.ai import agents
-from nvplan.ai.agents import MissingCredentials
+from nvplan.ai.agents import MissingCredentials, run_env_scan
 from nvplan.api import demo
 from nvplan.api.demo import main
 from nvplan.api.queries import table_counts
@@ -82,3 +83,30 @@ def test_live_without_credential_fails_fast(tmp_path, monkeypatch, capsys):
     # programmatic opt-in raises instead of falling back
     with pytest.raises(MissingCredentials):
         demo.run_demo(str(db), live=True)
+
+
+def test_demo_does_not_default_env_scan_to_the_real_brain_root(tmp_path, monkeypatch, capsys):
+    """The demo must not let ``run_env_scan`` fall back to its default ``brain_root`` (B2:
+    ``config.BRAIN_ROOT``, the repo's real ``brain/`` tree) - a fresh-clone ``nvplan-demo`` run
+    would otherwise leave an untracked ingestion record behind (observed:
+    ``brain/ingestion/market/2026-09-20-env-scan-1.md``).
+
+    ``tests/conftest.py`` redirects ``config.BRAIN_ROOT`` to a temp dir for the *whole* pytest
+    run, precisely so ordinary tests never touch the real tree - which also means a check of
+    "did anything land in ``config.BRAIN_ROOT``" can't tell a bare default from an explicit temp
+    path passed by the demo; both are temp dirs by the time this test runs. So this asserts on
+    what the demo actually calls ``run_env_scan`` with: without the fix, ``demo.py`` passes no
+    ``brain_root`` at all (the spy sees ``None``, i.e. "let it default"); with the fix it passes
+    its own scratch dir, which is never ``config.BRAIN_ROOT``."""
+    db = tmp_path / "brainroot.db"
+    seen_brain_roots: list[object] = []
+
+    def spy(*args, **kwargs):
+        seen_brain_roots.append(kwargs.get("brain_root"))
+        return run_env_scan(*args, **kwargs)
+
+    monkeypatch.setattr(demo, "run_env_scan", spy)
+    assert demo.run_demo(str(db), use_fake_ai=True)["ai_record"] == 3
+    assert seen_brain_roots, "run_env_scan was never called"
+    assert seen_brain_roots[0] is not None, "demo called run_env_scan with no brain_root - it will default to config.BRAIN_ROOT"
+    assert seen_brain_roots[0] != config.BRAIN_ROOT, "demo pointed run_env_scan straight at config.BRAIN_ROOT"

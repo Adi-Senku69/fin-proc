@@ -119,6 +119,54 @@ class StatementGridOut(BaseModel):
     consistency: list[str] = Field(default_factory=list, description="BS balance / cash-tie problems; empty = clean")
 
 
+# --------------------------------------------------------------------------- kpis (C2)
+
+
+class KpiThresholdsOut(BaseModel):
+    good: float
+    warn: float
+    source: str = Field(description="Where the threshold came from -- assumptions say so")
+
+
+class KpiValueOut(BaseModel):
+    year: int
+    value: float | None = Field(description="None where the KPI is undefined, e.g. divide by zero")
+    status: str = Field(description="green | amber | red | unknown -- never green without evidence")
+
+
+class KpiOut(BaseModel):
+    """One KPI across the scenario's years, with everything needed to defend it."""
+
+    code: str
+    name: str
+    quadrant: str
+    unit: str
+    direction: str
+    description: str
+    formula: str = Field(description="Rendered from the same fields nvplan.core.kpi.evaluate reads")
+    inputs: list[str]
+    thresholds: KpiThresholdsOut | None = None
+    rests_on_opening_position: bool = Field(
+        default=False,
+        description=(
+            "True when this KPI draws on the balance sheet or cash flow while the plan's "
+            "actuals are still labelled ILLUSTRATIVE, so the opening balance sheet those "
+            "statements roll forward from is an assumption, not a measured position. The "
+            "arithmetic is sound; the position underneath it is not yet real data."
+        ),
+    )
+    values: list[KpiValueOut]
+
+
+class KpiGridOut(BaseModel):
+    scenario_id: int
+    scenario_kind: str
+    scenario_label: str
+    illustrative: bool
+    years: list[int]
+    kpis: list[KpiOut]
+
+
 # --------------------------------------------------------------------------- ai
 
 
@@ -205,6 +253,10 @@ class BacktestOut(BaseModel):
     summary: list[dict[str, Any]]
     summary_default_path: list[dict[str, Any]]
     fits: list[dict[str, Any]]
+    #: (train_window, category_code, reason): categories whose fit was graded "review" (C1,
+    #: nvplan.core.regression._grade_fit) in that training window and so were excluded from
+    #: ``summary`` for it rather than crashing the report. Empty on the illustrative data.
+    skipped: list[dict[str, Any]]
     markdown: str
     illustrative: bool
 

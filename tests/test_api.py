@@ -127,6 +127,44 @@ def test_06_statements_and_trace(client, state):
     assert client.get("/statements/base?statement=cf").json()["years"] == YEARS
 
 
+def test_06b_kpis(client, state):
+    """C2: the KPI catalogue, reachable end to end (nvplan.core.kpi -> queries.kpi_grid ->
+    GET /kpis/{scenario_kind}) -- not a module that exists and is unit-tested in isolation with
+    no route ever calling it."""
+    r = client.get("/kpis/base")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["scenario_kind"] == "base" and body["years"] == YEARS and body["illustrative"] is True
+    codes = {k["code"] for k in body["kpis"]}
+    assert {"ebit_margin", "cost_ratio", "personnel_cost_ratio", "days_sales_outstanding"} <= codes
+
+    margin = next(k for k in body["kpis"] if k["code"] == "ebit_margin")
+    assert margin["formula"] == "(ebit) / (revenue)"
+    assert set(margin["inputs"]) == {"ebit", "revenue"}
+    assert margin["thresholds"]["source"]
+    assert [v["year"] for v in margin["values"]] == YEARS
+    assert all(v["status"] in {"green", "amber", "red", "unknown"} for v in margin["values"])
+
+    # cross-check one year by hand against the persisted P&L this scenario already produced
+    pl = client.get("/statements/base?statement=pl").json()
+
+    def pl_value(line_code: str, year: int) -> float:
+        row = next(r for r in pl["rows"] if r["line_code"] == line_code)
+        return row["cells"][str(year)]["value"]
+
+    ebit_2028, revenue_2028 = pl_value("ebit", 2028), pl_value("revenue", 2028)
+    expected = ebit_2028 / revenue_2028
+    got = next(v["value"] for v in margin["values"] if v["year"] == 2028)
+    assert got == pytest.approx(expected, rel=1e-12)
+
+    # a KPI resting on the (illustrative) opening balance sheet says so
+    equity_ratio = next(k for k in body["kpis"] if k["code"] == "equity_ratio")
+    assert equity_ratio["rests_on_opening_position"] is True
+    assert margin["rests_on_opening_position"] is False  # P&L-only, unaffected by the opening position
+
+    assert client.get("/kpis/nope").status_code == 404
+
+
 def test_07_env_scan_and_revenue_proposal(client, state):
     r = client.post("/ai/env-scan", json={"positions_subset": ["D1", "D2"]})
     assert r.status_code == 200, r.text

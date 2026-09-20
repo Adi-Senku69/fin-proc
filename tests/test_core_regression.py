@@ -11,7 +11,10 @@ import pytest
 from nvplan.config import DATA_DIR, PLAN_YEARS, REGRESSION_WINDOW
 from nvplan.core import CALC_VERSION, DerivationLedger, to_long, to_wide
 from nvplan.core.regression import (
+    FAIR_R2,
+    GOOD_R2,
     FitResult,
+    _grade_fit,
     fit_all,
     fit_category,
     ols,
@@ -313,3 +316,52 @@ def test_fit_result_helpers(wide):
     assert f.fixed_part_at(2027) == pytest.approx(f.alpha * (1 + f.valorization_rate) ** 2)
     row = f.as_parameter_row()
     assert row["calc_version"] == "core-1.0" and row["derivation_key"] == "param:MAT"
+
+
+# --------------------------------------------------------------------------- C1: fit-quality grading
+
+
+def test_grade_fit_thresholds():
+    """`_grade_fit` is the pure classifier behind `FitResult.quality`; pin its three bands and
+    the inclusive boundary (>= GOOD_R2 is "good", >= FAIR_R2 is "fair", below is "review") the
+    way `nvplan.core.kpi.grade` documents doing the same for KPI traffic lights."""
+    assert _grade_fit(1.0) == ("good", None)
+    assert _grade_fit(GOOD_R2) == ("good", None)
+    quality, reason = _grade_fit(GOOD_R2 - 1e-9)
+    assert quality == "fair" and reason is not None
+    quality, reason = _grade_fit(FAIR_R2)
+    assert quality == "fair" and reason is not None
+    quality, reason = _grade_fit(FAIR_R2 - 1e-9)
+    assert quality == "review" and reason is not None
+    quality, reason = _grade_fit(0.0)
+    assert quality == "review" and reason is not None
+
+
+def test_every_illustrative_fit_grades_good(wide):
+    """On the real illustrative data every category's split is strong (VERIFICATION.md: R^2 above
+    0.95 everywhere over the plan window); this pins that "good" is the ordinary outcome, not
+    "review" masquerading as untested because the seed data never reaches it."""
+    ledger = DerivationLedger()
+    fits = fit_all(wide, COST_CODES, REGRESSION_WINDOW, ledger=ledger, depreciation=wide["DEPR"])
+    for code, f in fits.items():
+        assert f.quality == "good", (code, f.r_squared, f.quality_reason)
+        assert f.quality_reason is None
+
+
+def test_review_grade_is_recorded_in_the_derivation_like_the_other_guards():
+    """A category whose cost does not track the driver at all (R^2 near zero, well below
+    FAIR_R2) grades "review" and says why -- and that grade/reason lands in the derivation's
+    parameters, the same way `valorization_status` / `joint_status` already do, rather than
+    being computed and then dropped on the floor."""
+    years = [2021, 2022, 2023, 2024, 2025]
+    rev = [16000.0, 17000.0, 15500.0, 18000.0, 16500.0]
+    cost = [300.0, 320.0, 305.0, 300.0, 380.0]  # picked to be ~uncorrelated with rev
+    wide = pd.DataFrame({"REV": rev, "MAT": cost}, index=pd.Index(years, name="year"))
+    ledger = DerivationLedger()
+    f = fit_category(wide, "MAT", (2021, 2025), ledger=ledger)
+    assert f.r_squared < FAIR_R2
+    assert f.quality == "review"
+    assert f.quality_reason is not None and "R^2" in f.quality_reason
+    d = ledger.get("param:MAT")
+    assert d.parameters["quality"] == "review"
+    assert d.parameters["quality_reason"] == f.quality_reason

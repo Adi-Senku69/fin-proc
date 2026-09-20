@@ -275,7 +275,7 @@ phase exists to remove.
 | Environmental scan | `ingestion/market/...` instead of database-only notes | n/a |
 | Draft a decision from a question | `decisions/YYYY-MM-DD-<slug>.md` | `pending` |
 | Draft hypotheses for a feature or an assumption | `hypotheses/<feature>.md` | `open` |
-| **The sweep** | a maintenance record listing what it found | n/a |
+| **The sweep** | nothing — read-only | n/a |
 
 ### 12.5 The sweep is what makes it think
 
@@ -283,11 +283,17 @@ A periodic pass that reads the brain and reports what has gone stale, rather tha
 
 - decided decisions whose **reversal condition** may have tripped, checked against the engine where the
   condition names a figure the engine holds
-- hypotheses still `open` well past the decision they were meant to test
+- hypotheses still `open` well past the decision they were meant to test — not yet checked: the indexer
+  populates no `tests`-relation `ClaimLink`, so there is nothing structural to check
 - evidence whose path-typed tag points at a file that no longer exists
-- decisions with no evidence from any source newer than the decision itself
+- decisions with no evidence from any source newer than the decision itself — the freshness half is not
+  yet checked: ingestion claims carry no indexed date (`brainkit.parse` sets `date=None` for them), so
+  checking it would mean a second ad hoc parse of each cited file rather than reading something already
+  indexed
 
-It proposes; it never promotes. Its output is a record like any other, and a human acts on it.
+It proposes; it never promotes, and it writes nothing: its findings are re-derivable from the tree and
+the plan at any time, so they are index-category, not record-category, under §3. The record is what a
+human writes to act on a finding, and that already has a home in `brain/decisions/`.
 
 ### 12.6 Phases
 
@@ -295,8 +301,8 @@ It proposes; it never promotes. Its output is a record like any other, and a hum
 |---|---|---|
 | B1 | The write substrate: render, validate-before-write, path confinement, refusal to overwrite | A drafted record that would fail validation is refused and writes nothing |
 | B2 | Ingestion of raw material, and the scan writing records instead of database-only notes | Built. The env-scan renders its flagged positions as a validated `brain/ingestion/market/...` record via `brainkit.writer.draft_ingestion`, indexed as a `Claim(kind=ingestion)`; that run's `ExternalNote` rows link to it through the additive, nullable `ExternalNote.source_claim_id`. A decision can cite the record as evidence and the citation resolves — proven end-to-end by the `nvplan-brain-write-check` console script (`bridge/ingest_check.py`) |
-| B3 | Drafting decisions and hypotheses from a question | A draft lands at `pending`, drives no figure, and a human promotes it |
-| B4 | The sweep | It finds a tripped reversal condition on the illustrative data and reports it |
+| B3 | Drafting decisions and hypotheses from a question | Built. The assistant drafts a `decisions/` or `hypotheses/` record via the `draft_decision` / `draft_hypotheses` tools (`nvplan.ai.tools`, through `bridge.draft`), always landing at `pending` / `open` — `bridge.draft` exposes no `status` or `effect` parameter at all, so a draft carrying a quantified effect is structurally unrepresentable rather than merely refused. Proven end to end by `nvplan-brain-draft-check` (`bridge/draft_check.py`): pending drives no figure; promoted by a human editing one line, the same decision drives the exact figure it names |
+| B4 | The sweep | Built. The sweep (`bridge/sweep.py`), reachable as the `nvplan-brain-sweep-check` console script and the `GET /brain/sweep` route. Reuses `brainkit.validate`'s `unresolved_link` and `effect_not_wired` codes and adds `computed_derivation_missing` and `broken_supersession_chain`, which need a live session. Reversal conditions: two prose templates that cite a checkable quantity are evaluated mechanically; everything else goes to an advisory model pass whose verdict is always `None` — the model's words land only in a detail field marked as needing a human, so a model can never be the thing that decides a condition tripped |
 
 `ExternalNote` rows written before B2 have no `brain/ingestion/` file behind them, so their
 `source_claim_id` is NULL. That is declared legacy, permanently - backfilling a file after the fact

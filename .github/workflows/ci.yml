@@ -54,3 +54,60 @@ jobs:
 
       - name: pytest (the offline suite; -m 'not live' is the default, see pyproject.toml)
         run: uv run pytest
+
+  contract-gate:
+    name: OpenAPI contract must be current (Python side)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: apps/web/openapi.json must match the FastAPI app's own schema
+        # scripts/export_openapi.py builds the schema from nvplan.api.app.create_app
+        # itself (no hand-written JSON). If a route or a schemas.py model moved and
+        # nobody regenerated the committed file, this fails the build instead of
+        # letting the frontend's types silently drift from the real API.
+        run: uv run python scripts/export_openapi.py --check
+
+  web:
+    name: Web — typecheck, lint, test, and generated types must match the schema
+    runs-on: ubuntu-latest
+    needs: contract-gate
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+
+      - name: src/api/schema.d.ts must match the committed openapi.json
+        # The second half of the contract gate: contract-gate above proves
+        # openapi.json matches the live FastAPI app; this proves schema.d.ts (the
+        # types every adapter in this app imports) matches openapi.json. Either
+        # one drifting fails CI.
+        run: |
+          npm run gen:api
+          git diff --exit-code src/api/schema.d.ts \
+            || (echo "::error::schema.d.ts is stale. Run 'npm run gen:api' in apps/web and commit." && exit 1)
+
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test -- --run
+      - run: npm run build

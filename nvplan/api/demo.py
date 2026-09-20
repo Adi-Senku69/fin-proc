@@ -24,6 +24,7 @@ import argparse
 import sys
 import tempfile
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
@@ -32,6 +33,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+from bridge.ingest import INGESTION_COLLECTION
 from nvplan import config
 from nvplan.ai import run_deviation_explanation, run_env_scan, run_revenue_proposal
 from nvplan.ai.agents import MissingCredentials, credential_hint, credentials_available
@@ -245,15 +247,33 @@ def run_demo(db_path: str, use_fake_ai: bool | None = None, live: bool = False,
     else:
         out(f"AI: real model {config.AI_MODEL} (deepagents + langchain-anthropic) - REAL TOKENS ARE BEING SPENT")
 
-    scan = run_env_scan(factory, model=scripted_env_scan_model() if fake else None)
-    with factory() as s:
-        scan_d = q.ai_record_dict(s, s.get(AiRecord, scan.id))
-        out(f"\nenv scan -> ai_record #{scan_d['id']} status={scan_d['status']} model={scan_d['model_version']}, "
-            f"{len(scan_d['note_ids'])} external notes written (source=ai_scan, ids {scan_d['note_ids']})")
-        out(f"  summary: {scan_d['rationale']}")
-        default = q.default_revenue(s, "base", PROPOSAL_YEAR)
-        contract_notes = q.note_ids(s, category_code="REV", year=PROPOSAL_YEAR) or q.note_ids(s)
-    out(f"\nvalorized default revenue {PROPOSAL_YEAR} (base): {default:,.1f} k EUR")
+    # run_env_scan (B2) drafts a brain/ingestion/market/ record for its flagged positions. The
+    # demo is a self-contained illustration run on a fresh clone, not a production caller, so it
+    # must not write into the repo's real brain/ (config.BRAIN_ROOT - run_env_scan's default when
+    # brain_root is omitted, which is exactly what the /ai/env-scan API route wants in
+    # production). A scratch tree instead, same discipline as bridge/*_check.py.
+    with tempfile.TemporaryDirectory(prefix="nvplan-demo-brain-") as brain_tmp:
+        brain_root = Path(brain_tmp) / "brain"
+        scan = run_env_scan(factory, model=scripted_env_scan_model() if fake else None, brain_root=brain_root)
+        with factory() as s:
+            scan_d = q.ai_record_dict(s, s.get(AiRecord, scan.id))
+            out(f"\nenv scan -> ai_record #{scan_d['id']} status={scan_d['status']} model={scan_d['model_version']}, "
+                f"{len(scan_d['note_ids'])} external notes written (source=ai_scan, ids {scan_d['note_ids']})")
+            out(f"  summary: {scan_d['rationale']}")
+            default = q.default_revenue(s, "base", PROPOSAL_YEAR)
+            contract_notes = q.note_ids(s, category_code="REV", year=PROPOSAL_YEAR) or q.note_ids(s)
+        out(f"\nvalorized default revenue {PROPOSAL_YEAR} (base): {default:,.1f} k EUR")
+
+        # B2's write is otherwise invisible in this demo - show the record it produced (path and
+        # rendered content) from the scratch tree above, since that write is the newest capability
+        # and the whole point of showing it is to make it visible, not to leave it off to the side.
+        ingestion_path = brain_root / "ingestion" / INGESTION_COLLECTION / f"{date.today().isoformat()}-env-scan-{scan.id}.md"
+        if ingestion_path.exists():
+            out(f"\nB2 brain write (demo scratch tree, discarded on exit - production writes to config.BRAIN_ROOT): "
+                f"{ingestion_path.relative_to(brain_tmp)}")
+            out(_excerpt(ingestion_path.read_text(encoding="utf-8"), n_lines=12))
+        else:
+            out("\nB2 brain write: skipped - this scan flagged no positions.")
 
     if fake:
         proposed = round(default * (1 - 0.045), 1)

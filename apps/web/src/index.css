@@ -1,0 +1,801 @@
+/* index.css — carried over verbatim (selectors and all) from nvplan/api/static/app.css, the
+ * vanilla UI's own stylesheet, so the React app and the hand-written UI read as one product
+ * rather than two palettes. Do NOT re-derive these tokens from the fin-plan-poc reference: that
+ * reference is Tailwind-only and has no tokens of its own to port from — app.css already carries
+ * its design language (ported into app.css earlier, see its own history), and this file is
+ * that, unchanged, so every component in ../components/*.tsx can use the exact same class names
+ * (`.panel`, `.chip`, `.data-table`, `.tabs`/`.tab-btn`, `.trace-node`, ...) the vanilla views'
+ * markup uses. Colours are tokens on :root, redefined under prefers-color-scheme: dark, so the
+ * page reads in both a dark room (a demo, projected) and daylight. Layout targets 1280 wide and
+ * degrades to a single column below 900. No framework classes (no Tailwind) — plain CSS custom
+ * properties + plain rules, exactly as in the source file.
+ */
+
+:root {
+  --bg: #f8fafc;              /* slate-50 */
+  --panel-bg: #ffffff;
+  --fg: #1e293b;               /* slate-800 — body text */
+  --fg-strong: #0f172a;        /* slate-900 — headings, the figures that are "the product" */
+  --muted: #64748b;            /* slate-500 */
+  --border: #e2e8f0;           /* slate-200 — panel outlines, header rules */
+  --border-soft: #f1f5f9;      /* slate-100 — ordinary row dividers, one shade quieter */
+  --accent: #4f46e5;           /* indigo-600 */
+  --accent-hover: #4338ca;     /* indigo-700 */
+  --accent-fg: #ffffff;
+  --accent-soft-bg: #eef2ff;   /* indigo-50 — tinted active/selected backgrounds */
+  --rail-bg: #ffffff;
+  --rail-fg: #64748b;
+  --rail-fg-active: #4338ca;
+  --rail-accent: #4f46e5;
+  --rail-border: var(--border);
+
+  /* Status vocabulary, each a text/background/border triple (reference's own convention: a
+   * -900-on-100 badge with a -300 border). Semantics below are shared across the whole app:
+   * ok/decided/confirmed/pass       -> emerald  (the reference's own "confirmed" colour)
+   * warn/illustrative/pending/fair  -> amber    (the reference's own "illustrative" colour)
+   * error/rejected/missed/material  -> rose
+   * ai_proposed (machine-authored)  -> violet   (the reference's own ai_proposed path colour)
+   * cascaded/info/forecast          -> sky      (the reference's own cascaded/forecast colour)
+   * "decided" and "illustrative" alias the closest reference concept instead of inventing a
+   * seventh and eighth hue — see UI.md. */
+  --ok: #065f46;               /* emerald-800 */
+  --ok-bg: #d1fae5;            /* emerald-100 */
+  --ok-border: #6ee7b7;        /* emerald-300 */
+
+  --warn: #92400e;             /* amber-800 */
+  --warn-bg: #fef3c7;          /* amber-100 */
+  --warn-border: #fcd34d;      /* amber-300 */
+
+  --error: #9f1239;            /* rose-800 */
+  --error-bg: #ffe4e6;         /* rose-100 */
+  --error-border: #fda4af;     /* rose-300 */
+
+  --ai: #5b21b6;               /* violet-800 */
+  --ai-bg: #ede9fe;            /* violet-100 */
+  --ai-border: #c4b5fd;        /* violet-300 */
+
+  --info: #075985;             /* sky-800 */
+  --info-bg: #e0f2fe;          /* sky-100 */
+  --info-border: #7dd3fc;      /* sky-300 */
+
+  --illustrative: var(--warn);
+  --illustrative-bg: var(--warn-bg);
+  --illustrative-border: var(--warn-border);
+
+  --decided: var(--ok);
+  --decided-bg: var(--ok-bg);
+  --decided-border: var(--ok-border);
+
+  /* The provenance "stamp" (chip-tag: the exact ingestion/source tag, PLATFORM.md §4.1) stays a
+   * deliberately bold, dark chip distinct from the ordinary light code boxes below — the app's
+   * own documented "provenance is the differentiator" decision, kept through this pass. */
+  --tag-bg: #1e293b;           /* slate-800 */
+  --tag-fg: #f1f5f9;           /* slate-100 */
+
+  /* Formula / prompt / raw-identifier boxes: the reference renders these as plain, quiet
+   * bg-slate-50 monospace blocks, not a dark "terminal" — carried over as-is. */
+  --code-bg: #f8fafc;          /* slate-50 */
+  --code-fg: #334155;          /* slate-700 */
+
+  /* type scale — figures are the product; they get the top of the scale. Everything else
+   * (labels, chips, secondary identifiers) sits below body text on purpose. */
+  --text-2xs: 0.72rem;
+  --text-xs: 0.8rem;
+  --text-sm: 0.88rem;
+  --text-base: 1rem;
+  --text-md: 1.15rem;
+  --text-lg: 1.4rem;
+  --text-xl: 1.75rem;
+  --text-2xl: 2.1rem;
+
+  /* spacing scale — 4px base, used instead of ad hoc px values in new/updated rules. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* shape + elevation, taken from the reference's rounded-md/rounded-lg/rounded-full and its
+   * shadow-sm cards. */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-full: 999px;
+  --shadow-sm: 0 1px 2px 0 rgba(15, 23, 42, 0.06), 0 1px 1px 0 rgba(15, 23, 42, 0.04);
+
+  --focus-ring: #6366f1;       /* indigo-500 */
+}
+
+@media (prefers-color-scheme: dark) {
+  /* The reference app has no dark mode of its own (Tailwind build, no `dark:` variants
+   * anywhere) — this block is not "taken" from it. It predates this pass and is kept because
+   * removing a working accessibility mode nobody asked to lose is not what "adopt the
+   * reference's design language" means; see UI.md. Hues below follow the same light-mode
+   * mapping (indigo/emerald/amber/rose/violet/sky) at dark-mode-appropriate values. */
+  :root {
+    --bg: #0f172a;              /* slate-900 */
+    --panel-bg: #1e293b;        /* slate-800 */
+    --fg: #e2e8f0;              /* slate-200 */
+    --fg-strong: #f8fafc;       /* slate-50 */
+    --muted: #94a3b8;           /* slate-400 */
+    --border: #334155;          /* slate-700 */
+    --border-soft: #26324a;
+    --accent: #818cf8;          /* indigo-400 */
+    --accent-hover: #6366f1;    /* indigo-500 */
+    --accent-fg: #0f172a;
+    --accent-soft-bg: rgba(129, 140, 248, 0.16);
+    --rail-bg: #0b1120;
+    --rail-fg: #94a3b8;
+    --rail-fg-active: #c7d2fe;  /* indigo-200 */
+    --rail-accent: #818cf8;
+
+    --ok: #6ee7b7;              /* emerald-300 */
+    --ok-bg: #064e3b;           /* emerald-900 */
+    --ok-border: #059669;       /* emerald-600 */
+
+    --warn: #fcd34d;            /* amber-300 */
+    --warn-bg: #451a03;         /* amber-950 */
+    --warn-border: #d97706;     /* amber-600 */
+
+    --error: #fda4af;           /* rose-300 */
+    --error-bg: #4c0519;        /* rose-950 */
+    --error-border: #e11d48;    /* rose-600 */
+
+    --ai: #c4b5fd;              /* violet-300 */
+    --ai-bg: #2e1065;           /* violet-950 */
+    --ai-border: #7c3aed;       /* violet-600 */
+
+    --info: #7dd3fc;            /* sky-300 */
+    --info-bg: #082f49;         /* sky-950 */
+    --info-border: #0284c7;     /* sky-600 */
+
+    --tag-bg: #e2e8f0;          /* slate-200 — inverted: the boldest contrast in a dark UI is a
+                                    light stamp, not a darker one. */
+    --tag-fg: #0f172a;
+
+    --code-bg: #26324a;
+    --code-fg: #cbd5e1;         /* slate-300 */
+
+    --focus-ring: #818cf8;      /* indigo-400 */
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  /* UI.md: readable at 1280 wide, no horizontal body scroll. Wide content below
+   * (the plan grid, statement/backtest tables, kv-tables, ...) gets its own
+   * overflow-x: auto container, so nothing should ever reach this point - this is
+   * the backstop that guarantees the body itself never grows a horizontal scrollbar. */
+  overflow-x: hidden;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+h2, h3, h4 { margin: 0.7em 0 0.4em; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: var(--text-lg); color: var(--fg-strong); }
+h3 { font-size: var(--text-md); color: var(--fg-strong); }
+h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; }
+
+/* the technical identifier, secondary everywhere it appears next to a plain label
+ * (terms.js): smaller, muted, monospace so it still reads as "the code", never as prose. */
+.term-code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: var(--text-2xs);
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+.term-head-primary { display: block; }
+.term-head-code { display: block; font-size: var(--text-2xs); font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; margin-top: 1px; }
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  grid-template-rows: auto 1fr;
+  min-height: 100vh;
+}
+
+.app-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-title {
+  font-weight: 700;
+  font-size: 1.05em;
+  color: var(--fg-strong);
+  /* a flex item's default min-width is its content size, which would otherwise
+   * refuse to shrink and push the header (and the whole grid) wider than the
+   * viewport - see .health-badge below, the actual long-content offender. */
+  min-width: 0;
+}
+
+.health-badge {
+  font-size: 0.8em;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  cursor: pointer;
+  font-family: inherit;
+  /* The database path (and the rest of the health line) can be an arbitrarily
+   * long absolute path. Truncate with an ellipsis instead of pushing the header -
+   * and the whole page - wider than the viewport; main.js sets `title` to the full
+   * text so it's still readable on hover. min-width: 0 is required alongside
+   * max-width for a flex item to actually be allowed to shrink below its content. */
+  min-width: 0;
+  max-width: 46vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.health-badge.health-bad { color: var(--error); border-color: var(--error-border); background: var(--error-bg); }
+
+.app-rail {
+  background: var(--rail-bg);
+  border-right: 1px solid var(--rail-border);
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rail-link {
+  color: var(--rail-fg);
+  padding: 10px 16px;
+  border-left: 3px solid transparent;
+  font-size: 0.95em;
+  font-weight: 500;
+}
+.rail-link:hover { color: var(--fg-strong); text-decoration: none; background: var(--border-soft); }
+.rail-link.active { color: var(--rail-fg-active); border-left-color: var(--rail-accent); background: var(--accent-soft-bg); font-weight: 700; }
+
+.app-main {
+  padding: 16px 20px 40px;
+  max-width: 1280px;
+  /* Same reasoning as .health-badge: this is a grid item (the "1fr" column of
+   * .app-shell), so without min-width: 0 a wide descendant (a table, a long path)
+   * would refuse to let this column shrink and would stretch the whole grid past
+   * the viewport instead of scrolling inside its own container below. */
+  min-width: 0;
+}
+
+.muted { color: var(--muted); }
+
+/* ---- panels / errors -------------------------------------------------- */
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin: 10px 0;
+  background: var(--panel-bg);
+  box-shadow: var(--shadow-sm);
+}
+
+.error-panel { border-color: var(--error-border); background: var(--error-bg); }
+.error-title { font-weight: 700; color: var(--error); }
+.error-message { margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
+
+.not-available { border-color: var(--warn-border); background: var(--warn-bg); }
+.not-available .error-title { color: var(--warn); }
+
+.validate-banner { }
+.validate-status { font-weight: 700; margin-bottom: 6px; }
+.validate-status.ok { color: var(--ok); }
+.validate-status.bad { color: var(--error); }
+
+/* ---- buttons / tabs / forms -------------------------------------------- */
+
+.btn {
+  font-family: inherit;
+  font-size: 0.9em;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+.btn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn-small { padding: 3px 10px; font-size: 0.82em; }
+
+/* A segmented control, not a row of pills — the reference's own shape for every either/or or
+ * one-of-few switch (scenario kind/variant, backtest basis, statement tabs): a quiet track with
+ * the active option raised on a white/panel chip. */
+.tabs { display: inline-flex; gap: 2px; margin: 8px 0; flex-wrap: wrap; background: var(--border-soft); padding: 4px; border-radius: var(--radius-md); width: fit-content; max-width: 100%; }
+.subtabs { margin-top: 6px; }
+.tab-btn {
+  font-family: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 5px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.88em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tab-btn:hover { color: var(--fg-strong); }
+.tab-btn.active { background: var(--panel-bg); color: var(--fg-strong); border-color: var(--border); box-shadow: var(--shadow-sm); }
+
+.trace-form, form.trace-form { display: flex; gap: 10px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+.trace-form label { display: flex; gap: 4px; align-items: center; font-size: 0.9em; color: var(--muted); }
+.trace-form select, .trace-form input {
+  font-family: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-bg);
+  color: var(--fg);
+}
+
+/* ---- chips / badges ---------------------------------------------------- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  background: var(--panel-bg);
+  color: var(--fg);
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+/* Provenance is the differentiator (UI.md refinement pass): a path chip — how a figure came to
+ * be — is a first-class, deliberate element, not incidental styling. Text carries the meaning
+ * (the label), colour reinforces it, never carries it alone. */
+.chip-path {
+  border-width: 1.5px;
+  font-weight: 700;
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel-bg);
+}
+.chip-path-marked { border-width: 2px; }
+.chip-path-decided { color: var(--decided); border-color: var(--decided-border); background: var(--decided-bg); }
+.chip-path-ai_proposed { color: var(--ai); border-color: var(--ai-border); background: var(--ai-bg); }
+
+.chip-illustrative { background: var(--illustrative-bg); color: var(--illustrative); border-color: var(--illustrative-border); font-weight: 700; }
+.chip-error { background: var(--error-bg); color: var(--error); border-color: var(--error-border); }
+.chip-warning { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
+.chip-tag {
+  /* Provenance is the differentiator: the plain "who/what said this" reading is the label
+   * (terms.js tagTerm), styled prominently like any other chip; the exact tag as written
+   * (a full ingestion/source path, PLATFORM.md §4.1) rides alongside as a secondary
+   * .term-code, never as the chip's only content, and never removed. Deliberately its own
+   * dark "stamp" tokens (--tag-bg/--tag-fg), not the same ones the code/formula boxes use
+   * below, so it keeps standing out even now that those are a quiet reference-style grey. */
+  background: var(--tag-bg);
+  color: var(--tag-fg);
+  border-color: var(--tag-bg);
+  font-weight: 700;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+.chip-tag + .term-code {
+  display: inline-block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+  vertical-align: top;
+  margin: 2px 0 2px 2px;
+}
+.chip-touchpoint { background: var(--ai-bg); color: var(--ai); border-color: var(--ai-border); }
+
+.chip-status.chip-decided, .chip-status.chip-confirmed, .chip-status.chip-within,
+.chip-status.chip-supported { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
+.chip-status.chip-pending, .chip-status.chip-proposed, .chip-status.chip-open,
+.chip-status.chip-marginal { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
+.chip-status.chip-superseded, .chip-status.chip-rejected, .chip-status.chip-refuted,
+.chip-status.chip-missed { background: var(--error-bg); color: var(--error); border-color: var(--error-border); }
+.chip-status.chip-ai_proposed { background: var(--ai-bg); color: var(--ai); border-color: var(--ai-border); }
+
+.chip-verdict.chip-within { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
+.chip-verdict.chip-marginal { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
+.chip-verdict.chip-missed { background: var(--error-bg); color: var(--error); border-color: var(--error-border); }
+
+/* path badge on trace nodes / plan cells */
+.path-badge { font-size: 0.75em; padding: 1px 7px; border-radius: var(--radius-full); border: 1px solid var(--border); margin-left: 6px; }
+.path-badge.path-marked { border-width: 2px; font-weight: 700; }
+.path-badge.path-decided { color: var(--decided); border-color: var(--decided-border); background: var(--decided-bg); }
+.path-badge.path-ai_proposed { color: var(--ai); border-color: var(--ai-border); background: var(--ai-bg); }
+
+/* ---- layout: split panes ------------------------------------------------ */
+
+/* The second pane (trace / detail) only reserves space once something is selected - the
+ * view sets .has-selection when it has an id/claim/record to show there. With nothing
+ * selected the grid/list gets the page's full width instead of being squeezed to a third
+ * of it for an empty "click a cell to trace it here" panel. */
+.split-layout { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
+.split-layout.has-selection { grid-template-columns: 1fr 1fr; }
+/* Wide content (a data table, a kv-table, a long path) scrolls inside its own pane
+ * rather than stretching the pane - and with it the page - past the viewport
+ * (UI.md: no horizontal body scroll). min-width: 0 is what lets a grid/flex item
+ * shrink to the available track width in the first place; overflow-x: auto is what
+ * turns any content that still doesn't fit into a local scrollbar instead of a
+ * page-wide one. */
+.pane { min-width: 0; overflow-x: auto; }
+
+/* ---- tables -------------------------------------------------------------- */
+
+.data-table, .kv-table, .param-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 6px 0 14px;
+  font-size: 0.92em;
+}
+.data-table th, .data-table td, .param-table th, .param-table td {
+  border-bottom: 1px solid var(--border-soft);
+  padding: 5px 8px;
+  text-align: right;
+  /* A number (or a date, or a short identifier) must never break mid-token - that was
+   * the layout regression: "22,052.5" shattering into four stacked fragments once figures
+   * went larger and monospace. Cells default to nowrap; a cell that genuinely holds
+   * unbounded prose instead of a figure opts back into wrapping with .cell-wrap below, so
+   * the exception is scoped to the classes that actually need it rather than applied to
+   * every table cell. A cell that still doesn't fit scrolls inside its own .pane instead
+   * of wrapping or widening the page. */
+  white-space: nowrap;
+}
+.data-table td.cell-wrap, .param-table td.cell-wrap {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.data-table th:first-child, .data-table td:first-child,
+.param-table th:first-child, .param-table td:first-child { text-align: left; }
+/* Header row: reference's own bg-slate-50 + uppercase tracked-out label treatment. */
+.data-table tr:first-child th {
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.82em;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.row-label { white-space: nowrap; font-weight: 600; color: var(--fg-strong); }
+
+.kv-table { width: auto; }
+.kv-table th { text-align: left; color: var(--muted); padding-right: 14px; font-weight: 500; white-space: nowrap; }
+/* Same fault as .data-table above: a parameter/input value is usually a figure (alpha,
+ * beta, a year, a count) and must never break mid-token. kvTable() in views/trace.js
+ * marks the exceptional cell - a non-numeric input, or a compound value it had to
+ * JSON-stringify - with .kv-value-prose, so only that cell opts back into wrapping. */
+.kv-table td { text-align: left; white-space: nowrap; }
+.kv-table td.kv-value-prose { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+
+tr.active-row, tr.claim-row.active { background: var(--accent-soft-bg); }
+tr.verdict-missed { background: var(--error-bg); }
+tr.verdict-marginal { background: var(--warn-bg); }
+
+.grid-meta { margin: 6px 0 10px; color: var(--muted); font-size: 0.9em; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* plan grid cells — figures are the product; they are the strongest thing on the page. */
+.cell-btn {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  background: none;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: var(--text-base);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+}
+.cell-btn:hover { background: var(--border-soft); }
+td.plan-cell { position: relative; }
+td.cell-marked { background: var(--decided-bg); }
+td.cell-ai_proposed { background: var(--ai-bg); }
+.path-tag {
+  font-size: var(--text-2xs);
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.consistency-panel { margin: 8px 0 14px; }
+.consistency-ok { color: var(--ok); font-weight: 700; }
+.consistency-bad { color: var(--error); font-weight: 700; }
+
+/* ---- trace tree ----------------------------------------------------------- */
+/* Depth needs to survive deep nesting: each level gets its own guide colour cycling through a
+ * small palette (repeating every 6 levels), so "how deep am I" reads at a glance without
+ * counting indents. The <summary> is the collapse/expand affordance — a rotating marker plus
+ * "collapse"/"expand" text so it doesn't rely on the triangle glyph alone. */
+
+.trace-container { margin-top: 8px; }
+.trace-toolbar { margin-bottom: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+details.trace-node {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin: 6px 0;
+  padding: 4px 8px;
+  background: var(--panel-bg);
+}
+details.trace-node > summary.trace-summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+  list-style: none;
+}
+details.trace-node > summary.trace-summary::-webkit-details-marker { display: none; }
+.trace-disclosure {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--muted);
+  transition: transform 0.12s ease;
+}
+details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90deg); }
+.trace-label { font-weight: 600; overflow-wrap: anywhere; }
+.trace-value { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 700; color: var(--accent); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+/* The standalone Trace view doesn't wrap each node's parameters/inputs table in a
+ * .pane (only the Plan view's side panel does) - give the node body its own
+ * horizontal scroll directly, so a wide parameters table scrolls next to its own
+ * node instead of stretching the page. */
+.trace-body { padding: 6px 4px 4px 4px; min-width: 0; overflow-x: auto; }
+.trace-children {
+  margin-left: 14px;
+  padding-left: 12px;
+  min-width: 0;
+  border-left: 3px solid var(--trace-guide, var(--border));
+}
+.trace-children.depth-guide-0 { --trace-guide: var(--accent); }
+.trace-children.depth-guide-1 { --trace-guide: var(--ok); }
+.trace-children.depth-guide-2 { --trace-guide: var(--ai); }
+.trace-children.depth-guide-3 { --trace-guide: var(--info); }
+.trace-children.depth-guide-4 { --trace-guide: var(--warn); }
+.trace-children.depth-guide-5 { --trace-guide: var(--muted); }
+.block-title { font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 700; margin: 8px 0 2px; }
+.formula { font-family: ui-monospace, Menlo, Consolas, monospace; background: var(--code-bg); color: var(--code-fg); border: 1px solid var(--border); padding: 4px 8px; border-radius: var(--radius-sm); display: inline-block; }
+
+.ai-block, .claim-block { border-top: 1px dashed var(--border); margin-top: 8px; padding-top: 8px; }
+.evidence-list { margin: 4px 0; padding-left: 18px; }
+.evidence-list li { margin: 3px 0; overflow-wrap: anywhere; }
+
+.prompt-label { font-size: 0.8em; color: var(--muted); margin-top: 6px; }
+.prompt-box {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border: 1px solid var(--border);
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+}
+
+.points-details summary { cursor: pointer; color: var(--muted); font-size: 0.85em; }
+
+/* ---- brain / findings ------------------------------------------------------ */
+
+.finding-list { list-style: none; padding: 0; margin: 6px 0; }
+.finding-list li { padding: 3px 0; font-size: 0.9em; overflow-wrap: anywhere; }
+
+.call-log-entry summary { cursor: pointer; font-size: 0.88em; color: var(--muted); }
+
+/* ---- demo -------------------------------------------------------------------- */
+
+.demo-steps { display: flex; flex-direction: column; gap: 12px; }
+.demo-step { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 16px; background: var(--panel-bg); box-shadow: var(--shadow-sm); }
+.demo-step-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.demo-step-head h3 { margin: 0; }
+.endpoint-label { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.82em; color: var(--muted); }
+.demo-step-out { margin-top: 8px; }
+.kv-line { font-size: 0.92em; }
+.impact-link { margin: 4px 0; }
+.impact-link a { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em; }
+
+/* ---- states: loading / empty (UI.md refinement: "a blank panel is a bug") -------------------- */
+
+.state-panel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.loading-panel { border: 1px dashed var(--border); border-radius: var(--radius-md); background: var(--panel-bg); }
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: nv-spin 0.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2.2s; }
+}
+@keyframes nv-spin { to { transform: rotate(360deg); } }
+
+.empty-panel {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-bg);
+}
+.empty-text { color: var(--muted); }
+
+/* ---- ask view (UI.md Part 3) ---------------------------------------------------------------- */
+
+.ask-cost-notice {
+  font-size: var(--text-xs);
+  color: var(--warn);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.ask-form {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  margin-bottom: var(--space-4);
+}
+.ask-question {
+  flex: 1;
+  min-width: 0;
+  font-family: inherit;
+  font-size: var(--text-base);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-bg);
+  color: var(--fg);
+  resize: vertical;
+  min-height: 44px;
+}
+.ask-form select {
+  font-family: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-bg);
+  color: var(--fg);
+}
+
+.ask-thread { display: flex; flex-direction: column; gap: var(--space-4); }
+.ask-exchange { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-4); background: var(--panel-bg); box-shadow: var(--shadow-sm); }
+.ask-question-echo { font-weight: 700; font-size: var(--text-md); margin-bottom: var(--space-2); color: var(--fg-strong); }
+.ask-answer-prose { font-size: var(--text-base); line-height: 1.7; }
+.ask-answer-prose .text-segment { white-space: pre-wrap; }
+
+/* A figure segment must read as part of the sentence, not a footnote: an inline, clickable
+ * chip carrying its own label + value + unit, styled with the same decided/ai_proposed
+ * language as everywhere else provenance appears. */
+.figure-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  margin: 0 2px;
+  padding: 2px 10px 3px;
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--accent);
+  background: var(--accent-soft-bg);
+  color: var(--fg-strong);
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 0.98em;
+  line-height: 1.3;
+}
+.figure-chip:hover { background: var(--accent); color: var(--accent-fg); }
+.figure-chip .figure-chip-label { font-weight: 500; color: var(--muted); }
+.figure-chip:hover .figure-chip-label { color: var(--accent-fg); opacity: 0.85; }
+.figure-chip .figure-chip-value { font-family: ui-monospace, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+.claim-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  margin: 0 2px;
+  padding: 2px 10px 3px;
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--decided-border);
+  background: var(--decided-bg);
+  color: var(--decided);
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 0.98em;
+}
+.claim-chip:hover { filter: brightness(0.95); }
+
+.ask-proposal-card {
+  margin-top: var(--space-3);
+  border: 2px solid var(--ai-border);
+  background: var(--ai-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  box-shadow: var(--shadow-sm);
+}
+.ask-proposal-title { font-weight: 700; color: var(--ai); text-transform: uppercase; font-size: var(--text-xs); letter-spacing: 0.04em; margin-bottom: 6px; }
+.ask-proposal-value { font-size: var(--text-lg); font-weight: 700; margin: 4px 0; color: var(--fg-strong); }
+.ask-proposal-actions { display: flex; gap: var(--space-2); margin-top: var(--space-3); }
+.btn-confirm { background: var(--ok); border-color: var(--ok); color: #fff; }
+.btn-reject { background: var(--error); border-color: var(--error); color: #fff; }
+
+/* The refusal: a feature, not an error (UI.md Part 3). Visually distinct from the transport
+ * error-panel — deliberately prominent, explained in plain words, never a corner note. */
+.ask-refusal {
+  margin-top: var(--space-2);
+  border: 2px solid var(--error-border);
+  background: var(--error-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+.ask-refusal-title { font-weight: 700; color: var(--error); font-size: var(--text-md); margin-bottom: 4px; }
+.ask-refusal-lede { margin-bottom: var(--space-2); }
+.ask-refusal-list { margin: 6px 0 0; padding-left: 20px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: var(--text-xs); }
+.ask-refusal-list li { margin: 3px 0; overflow-wrap: anywhere; }
+
+.ask-usage { margin-top: var(--space-3); font-size: var(--text-xs); color: var(--muted); border-top: 1px dashed var(--border); padding-top: var(--space-2); }
+.ask-pending { display: flex; align-items: center; gap: var(--space-2); color: var(--muted); padding: var(--space-3) 0; }
+
+/* ---- responsive --------------------------------------------------------------- */
+
+@media (max-width: 900px) {
+  .app-shell { grid-template-columns: 1fr; }
+  .app-rail { flex-direction: row; overflow-x: auto; padding: 6px; border-right: none; border-bottom: 1px solid var(--rail-border); }
+  .rail-link { border-left: none; border-bottom: 3px solid transparent; padding: 8px 12px; white-space: nowrap; }
+  .rail-link.active { border-left-color: transparent; border-bottom-color: var(--rail-accent); }
+  /* .has-selection must be named here too: it is more specific than the bare
+   * .split-layout rule above and would otherwise still win under 900px. */
+  .split-layout, .split-layout.has-selection { grid-template-columns: 1fr; }
+  .app-main { padding: 12px; }
+  .ask-form { flex-direction: column; }
+  .ask-form select { align-self: flex-start; }
+}

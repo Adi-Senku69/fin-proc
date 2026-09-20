@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import numpy as np
@@ -249,3 +250,71 @@ def test_explicit_cases_and_validation(wide):
         run_backtest(wide, cases=[BacktestCase((2021, 2025), 2026, 1)], ledger=DerivationLedger())
     with pytest.raises(ValueError):
         run_backtest(wide.drop(columns="DEPR"), ledger=DerivationLedger())
+
+
+# --------------------------------------------------------------------------- C1: review-graded fits are skipped, not crashed
+
+
+def test_illustrative_backtest_never_skips_a_category(backtest):
+    """On the real illustrative data every window's fit is "good" or "fair" (worst R^2 0.91,
+    VERIFICATION.md) -- pins that `skipped` being empty is today's ordinary result, not untested
+    because the seed data never reaches "review"."""
+    _, result = backtest
+    assert result.skipped.empty
+    assert "skipped" not in result.to_markdown()
+
+
+def test_a_review_graded_category_is_skipped_not_crashed():
+    """The consumer side of C1's structural refusal: `project_scenario` raises ValueError on a
+    "review"-graded fit (see tests/test_core_projector.py), which is correct for the live plan
+    but wrong for a backtest whose whole point is to measure fits that may be weak. Build a
+    synthetic 10-year ledger with one category (BAD) that is deliberately uncorrelated with
+    revenue in every rolling window, so its fit reliably grades "review", and confirm
+    `run_backtest` excludes it from `summary` and records it in `skipped` instead of raising."""
+    years = list(range(2016, 2026))
+    rev = 10_000.0 * 1.05 ** np.arange(10)
+    good = 100.0 + 0.05 * rev  # tracks revenue closely: always grades "good"
+    bad = np.array([50.0, 200.0, 10.0, 180.0, 30.0, 220.0, 5.0, 190.0, 60.0, 210.0])  # never does
+    depr = np.full(10, 20.0)
+    wide = pd.DataFrame({"REV": rev, "GOOD": good, "BAD": bad, "DEPR": depr}, index=pd.Index(years, name="year"))
+
+    result = run_backtest(wide, cost_codes=("GOOD", "BAD"), ledger=DerivationLedger(), depreciation=wide["DEPR"])
+
+    assert not result.skipped.empty
+    assert set(result.skipped["category_code"]) == {"BAD"}
+    assert set(result.skipped["train_window"]) == {f"{w}-{w + 4}" for w in range(2016, 2021)}
+    assert (result.skipped["reason"].str.contains("R^2", regex=False)).all()
+
+    assert "BAD" not in set(result.summary["category_code"])
+    assert "BAD" not in set(result.summary_default_path["category_code"])
+    assert "GOOD" in set(result.summary["category_code"])  # the good category is unaffected
+
+    report = result.to_markdown()
+    assert "Categories skipped" in report and "BAD" in report
+
+
+# --------------------------------------------------------------------------- no aggregate MAPE across categories
+#
+# The reference brief's own discipline: its backtest reports two distinct error bases and
+# deliberately carries no aggregate MAPE field, with a test asserting its absence -- because
+# averaging MAPE across categories hides that some of them miss their own threshold while others
+# comfortably beat it. Checked here rather than ported outright, because NewVision's backtest
+# already has this property: `summarize_errors` groups by (category_code, horizon, basis) -- the
+# finest granularity, never blended into one number -- and `BacktestResult` carries no field that
+# would average across categories. This test pins that finding so a future change cannot
+# reintroduce the exact failure mode the reference brief flags.
+
+
+def test_backtest_reports_no_aggregate_mape_across_categories():
+    assert SUMMARY_COLUMNS[:3] == ["category_code", "horizon", "basis"]
+    result_fields = {f.name for f in dataclasses.fields(BacktestResult)}
+    assert not {"mape", "overall_mape", "aggregate_mape", "blended_mape"} & result_fields
+
+
+def test_backtest_summary_never_blends_categories_together(backtest):
+    """Every summary row's `mape` is per (category, horizon, basis), computed from that group's
+    own cases only -- never a mean taken across categories, which would let a badly-missing
+    category hide inside a comfortably-passing one."""
+    _, result = backtest
+    assert result.summary.groupby(["category_code", "horizon", "basis"]).size().eq(1).all()
+    assert len(result.summary) == result.summary[["category_code", "horizon"]].drop_duplicates().shape[0]

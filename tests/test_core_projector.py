@@ -216,6 +216,36 @@ def test_project_scenario_direct_and_custom_label(wide):
                          revenue_path_keys={2026: "k"})
 
 
+def test_project_scenario_refuses_a_review_graded_fit(wide):
+    """C1 structural refusal: project_scenario is the actual consumer of `FitResult.quality` /
+    `.quality_reason` (nvplan.core.regression) -- a grade nothing reads would be exactly the
+    reachability failure tests/test_reachability.py's sibling discipline exists to catch
+    elsewhere in this repo. No real category in the illustrative data ever grades "review"
+    (see test_every_illustrative_fit_grades_good), so the refusal is exercised here by forcing
+    one category's grade, the same way test_ols_rejects_degenerate_input exercises a guard the
+    seed data never trips on its own."""
+    import dataclasses
+
+    ledger = DerivationLedger()
+    fits = fit_all(wide, ledger=ledger)
+    sched = depreciation_schedule(pd.read_csv(DATA_DIR / "investment_plan.csv"), ledger=ledger)
+    depr = sched.set_index("year")["depreciation"]
+    reviewed = dict(fits)
+    reviewed["MAT"] = dataclasses.replace(
+        fits["MAT"], quality="review", quality_reason="R^2 of 12% is below the 60% fair threshold (test fixture)."
+    )
+    path = pd.Series({2026: 21000.0})
+    keys = {2026: "ai:REV:2026"}
+    ledger.add(keys[2026], "AI proposed revenue (confirmed)", inputs={"value": 21000.0})
+    with pytest.raises(ValueError, match="MAT"):
+        project_scenario(reviewed, path, t0=2025, scenario="base", depreciation=depr, ledger=ledger,
+                         revenue_path_keys=keys)
+    # a fit graded "good"/"fair" is unaffected: no refusal when nothing is graded for review
+    df = project_scenario(fits, path, t0=2025, scenario="base", depreciation=depr, ledger=DerivationLedger(),
+                          revenue_path_keys=keys)
+    assert "MAT" in set(df.category_code)
+
+
 def test_scenario_revenue_paths_without_default_keys():
     ledger = DerivationLedger()
     base = pd.Series({2026: 100.0, 2027: 200.0})
