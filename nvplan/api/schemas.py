@@ -262,6 +262,34 @@ class BrainValidateOut(BaseModel):
     clean: bool
 
 
+class ReversalVerdictOut(BaseModel):
+    """``bridge.sweep.ReversalVerdict``, serialised. ``tripped`` is ``true``/``false`` only for a
+    mechanically evaluated condition (``mechanism`` is ``"r_squared"`` or ``"plan_value"``);
+    ``null`` means advisory - the model may have looked at it (``detail``), but nothing decided
+    whether it has tripped (PLATFORM.md §12.1/§12.5 - only a human does)."""
+
+    claim_id: int
+    decision_slug: str
+    decision_title: str
+    condition_text: str
+    mechanism: str
+    tripped: bool | None
+    detail: str
+
+
+class BrainSweepOut(BaseModel):
+    """The sweep (PLATFORM.md §12.5/§12.6, work package B4): what is stale or newly true across
+    ``brain/``, read-only - nothing here has ever written a file or changed a claim's status (see
+    ``bridge.sweep``'s own module docstring)."""
+
+    structural_findings: list[FindingOut] = Field(
+        default_factory=list, description="unresolved_link / effect_not_wired, reused from brainkit.validate"
+    )
+    computed_derivation_findings: list[FindingOut] = Field(default_factory=list)
+    supersession_findings: list[FindingOut] = Field(default_factory=list)
+    reversal_verdicts: list[ReversalVerdictOut] = Field(default_factory=list)
+
+
 class ClaimOut(BaseModel):
     id: int
     kind: str

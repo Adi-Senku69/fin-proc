@@ -60,6 +60,7 @@ from brainkit.validate import Finding, validate_tree
 from bridge.db import init_platform_db
 from bridge.effects import decided_effects, revenue_override
 from bridge.lookup import make_derivation_lookup
+from bridge.sweep import ReversalVerdict, run_sweep
 
 ModelFactory = Callable[[str, dict[str, Any]], Any]
 
@@ -135,6 +136,13 @@ def _repo_relative(path: Path) -> str:
 def _finding_dict(f: Finding) -> dict[str, Any]:
     return {"path": _repo_relative(f.path), "line": f.line, "code": f.code, "message": f.message,
             "severity": f.severity}
+
+
+def _reversal_verdict_dict(v: ReversalVerdict) -> dict[str, Any]:
+    return {
+        "claim_id": v.claim_id, "decision_slug": v.decision_slug, "decision_title": v.decision_title,
+        "condition_text": v.condition_text, "mechanism": v.mechanism, "tripped": v.tripped, "detail": v.detail,
+    }
 
 
 def resolve_model(app: FastAPI, touchpoint: str, context: dict[str, Any]):
@@ -407,6 +415,26 @@ def _register(app: FastAPI) -> None:
     @app.get("/brain/effects", response_model=list[S.DecidedEffectOut])
     def brain_effects(session: Session = Depends(get_session)):
         return q.decided_effects_list(session)
+
+    @app.get("/brain/sweep", response_model=S.BrainSweepOut)
+    def brain_sweep(
+        brain_root: str | None = Query(None, description="default: the repository's brain/ directory"),
+        session: Session = Depends(get_session),
+    ):
+        """PLATFORM.md §12.5/§12.6 (work package B4): the sweep, read-only. Deliberately takes no
+        model from ``app.state.model_factory`` / ``resolve_model`` above - ``bridge.sweep.
+        run_sweep`` resolves its own default via ``nvplan.ai.agents.resolve_model(None,
+        provider=config.AI_BRAIN_WRITE_PROVIDER)``, the same offline-by-default path B2/B3 use, so
+        this route can never go live just because a credential sits in ``.env`` (see that
+        function's own docstring)."""
+        root = Path(brain_root) if brain_root else DEFAULT_BRAIN_ROOT
+        report = run_sweep(session, root)
+        return {
+            "structural_findings": [_finding_dict(f) for f in report.structural_findings],
+            "computed_derivation_findings": [_finding_dict(f) for f in report.computed_derivation_findings],
+            "supersession_findings": [_finding_dict(f) for f in report.supersession_findings],
+            "reversal_verdicts": [_reversal_verdict_dict(v) for v in report.reversal_verdicts],
+        }
 
     @app.post("/bridge/apply", response_model=S.BridgeApplyOut)
     def bridge_apply(body: S.BridgeApplyIn = S.BridgeApplyIn(), session: Session = Depends(get_session)):

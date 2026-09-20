@@ -103,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
 
             _step("3. reindex and confirm the citation resolves")
             report = reindex_tree(session, brain_root, strict=True)
-            print(f"files_seen={report.files_seen} indexed={report.indexed} rejected={len(report.rejected)}")
+            print(f"files_seen={report.files_seen} indexed={report.indexed} skipped_unchanged={report.skipped_unchanged} rejected={len(report.rejected)}")
             if report.rejected:
                 for path in report.rejected:
                     print(f"  REJECTED: {path}")

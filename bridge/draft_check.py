@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             from brainkit.indexer import reindex_tree
 
             report = reindex_tree(session, brain_root, strict=True)
-            print(f"files_seen={report.files_seen} indexed={report.indexed} rejected={len(report.rejected)}")
+            print(f"files_seen={report.files_seen} indexed={report.indexed} skipped_unchanged={report.skipped_unchanged} rejected={len(report.rejected)}")
             if report.rejected:
                 for path in report.rejected:
                     print(f"  REJECTED: {path}")
@@ -164,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
 
             _step("5. reindex; the same bridge call now drives the figure")
             report = reindex_tree(session, brain_root, strict=True)
-            print(f"files_seen={report.files_seen} indexed={report.indexed} rejected={len(report.rejected)}")
+            print(f"files_seen={report.files_seen} indexed={report.indexed} skipped_unchanged={report.skipped_unchanged} rejected={len(report.rejected)}")
             if report.rejected:
                 for path in report.rejected:
                     print(f"  REJECTED: {path}")

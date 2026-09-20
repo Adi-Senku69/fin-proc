@@ -373,6 +373,14 @@ def refusing_model(*, before: list[AIMessage] | None = None, **kwargs: Any) -> F
 # what it deliberately does and does not do. Everything below is a pure function of the message
 # history deepagents replays on every model call - no instance state, no randomness, no network.
 
+# B4 (PLATFORM.md §12.5/§12.6, bridge.sweep._advisory_pass): the marker that routes a plain,
+# tool-free model.invoke() call - not an agent turn, no bind_tools(), no schema - to
+# DeterministicChatModel._sweep_advisory_step instead of the surface dispatch below, which only
+# ever sees bound tools/schemas. This is the one call in the whole AI layer that is never part of
+# a deepagents run: the sweep never builds an agent, it just asks a model one direct question
+# about a reversal condition it could not check mechanically.
+SWEEP_ADVISORY_MARKER = "SWEEP_ADVISORY_REVERSAL_CHECK"
+
 # The response-schema tool name deepagents' ToolStrategy adds -> which touchpoint/surface this
 # run is. Determined from the tool names bound at bind_tools() time, exactly the same name each
 # scripted scenario above already calls at its own final turn (see ``structured``).
@@ -605,6 +613,8 @@ class DeterministicChatModel(BaseChatModel):
         return self
 
     def _generate(self, messages: list[Any], stop: Any = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:  # noqa: ARG002
+        if SWEEP_ADVISORY_MARKER in _human_text(messages):
+            return ChatResult(generations=[ChatGeneration(message=self._sweep_advisory_step(messages))])
         surface = next((s for schema, s in _SCHEMA_SURFACE.items() if schema in self.bound_tools), None)
         step = {
             "env_scan": self._env_scan_step,
@@ -725,6 +735,32 @@ class DeterministicChatModel(BaseChatModel):
             )
         payload = {"segments": segments, "proposal": None, "ai_record_id": -1, "usage": {}}
         return structured("AssistantAnswer", payload)
+
+    # -- sweep advisory pass (B4) -------------------------------------------------
+
+    def _sweep_advisory_step(self, messages: list[Any]) -> AIMessage:
+        """bridge.sweep._advisory_pass's offline default: reads the reversal condition's own
+        wording straight out of the prompt and names whatever numeric/date/cadence signal it
+        finds - reactive, like every other step here, not a fixed script - but it never states
+        whether the condition has tripped. Only a human does that
+        (bridge.sweep.ReversalVerdict.tripped stays None for every advisory verdict, whatever
+        this text says - see that dataclass's own docstring)."""
+        text = _human_text(messages)
+        m = re.search(r"Reversal condition as written:\s*(.+)", text)
+        condition = m.group(1).strip() if m else ""
+        signals = []
+        if re.search(r"\d{4}-\d{2}-\d{2}", condition):
+            signals.append("a specific date")
+        if re.search(r"\d+(?:\.\d+)?\s*%", condition):
+            signals.append("a percentage threshold")
+        if re.search(r"quarter", condition, re.IGNORECASE):
+            signals.append("a quarterly cadence")
+        signal_text = ", ".join(signals) if signals else "no obvious numeric or date signal"
+        note = (
+            f"This condition's wording carries {signal_text}; a human should check it directly "
+            "against the current data before treating it as tripped or not."
+        )
+        return AIMessage(content=note)
 
     # -- anything else (e.g. the free-form advisor, which has no response schema of its own) ----
 

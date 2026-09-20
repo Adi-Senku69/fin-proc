@@ -31,6 +31,7 @@ nvplan-ai-check = "nvplan.ai.check:main"
 nvplan-bridge-check = "bridge.check:main"
 nvplan-brain-write-check = "bridge.ingest_check:main"
 nvplan-brain-draft-check = "bridge.draft_check:main"
+nvplan-brain-sweep-check = "bridge.sweep_check:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
