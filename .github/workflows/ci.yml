@@ -1,0 +1,56 @@
+name: CI
+
+# A1: the offline job below runs with NO Anthropic credential in the environment at all - no
+# ANTHROPIC_API_KEY, no ANTHROPIC_AUTH_TOKEN, no ~/.config/anthropic profile (a fresh runner has
+# none). nvplan.ai.agents.resolve_model falls back to the deterministic provider by default
+# (config.AI_PROVIDER == "auto"), so the whole AI path - all three touchpoints plus the
+# conversational assistant - runs end to end here with no network call and no cost. See
+# nvplan/ai/README.md ("Offline by default") and nvplan/ai/fake.py's module doc for the seam.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-offline:
+    name: pytest (no credential, deterministic AI provider)
+    runs-on: ubuntu-latest
+    # Deliberately NOT set: ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_WORKSPACE_ID.
+    # NVPLAN_AI_PROVIDER is left unset too (default "auto") so this job proves the *default*
+    # behaviour is credential-free, not a forced "deterministic" override papering over a
+    # regression - see tests/test_reachability.py's provider-resolution assertions.
+    env:
+      HOME: /home/runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Assert no Anthropic credential is present (sanity check on the job itself)
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$ANTHROPIC_AUTH_TOKEN" ]; then
+            echo "a credential leaked into the offline job's environment" >&2
+            exit 1
+          fi
+
+      - name: uv run nvplan-ai-check (expect: no credential, exit 1, nothing sent)
+        run: |
+          uv run nvplan-ai-check; code=$?
+          if [ "$code" -ne 1 ]; then
+            echo "expected exit code 1 (no credential); got $code" >&2
+            exit 1
+          fi
+
+      - name: pytest (the offline suite; -m 'not live' is the default, see pyproject.toml)
+        run: uv run pytest

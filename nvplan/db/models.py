@@ -262,6 +262,24 @@ class ExternalNote(Base):
     source: Mapped[NoteSource] = mapped_column(Enum(NoteSource), nullable=False, default=NoteSource.manual)
     # Set for source=ai_scan: the ai_record (env scan run) that produced this note.
     ai_record_id: Mapped[int | None] = mapped_column(ForeignKey("ai_record.id"), nullable=True)
+    # B2 (PLATFORM.md §12.4, additive): set when this note is the finance-side derived projection
+    # of a brain/ingestion/ record - the provenance Claim.id (provenance.models - a separate
+    # metadata set, see that module's docstring) it was written and indexed from
+    # (bridge.ingest.write_env_scan_ingestion). Plain integer, no ForeignKey: the same
+    # cross-package convention Claim.derivation_id/ai_record_id already use, because a
+    # finance-only database (no provenance tables at all) must keep working with this column
+    # simply staying NULL forever. Two classes of NULL, and they are not the same gap. A note
+    # written before B2 has no brain/ingestion/ file behind it and never will; synthesizing one
+    # after the fact would fabricate provenance for material never ingested as a tagged record -
+    # the exact thing §4.1 tagging exists to prevent - so these rows are declared legacy and will
+    # not be backfilled. A note from write_env_scan_ingestion's except branch (bridge.ingest) is
+    # different: draft_ingestion already wrote the tagged file to disk before reindex_tree ran, so
+    # the record genuinely exists - only the index linking it to a Claim.id is missing, e.g. a
+    # finance-only database with no provenance tables yet. That is an indexing gap, not a
+    # provenance gap: recoverable in principle by initializing the schema and reindexing the tree,
+    # though nothing today re-stamps this column after the fact. An integer always means a real
+    # brain/ingestion/ record backs this note; NULL on a pre-B2 row is that row honestly saying so.
+    source_claim_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     category: Mapped[Category | None] = relationship()
 

@@ -42,14 +42,26 @@ does.
 
 Agent construction reuses ``nvplan.ai.agents``' private helpers (``_invoke``, ``PromptCapture``,
 ``_prompt_text``/``_system_as_sent``/``_response_text``, ``_discard_partial_writes``,
-``_agent_middleware``, ``get_model``, ``model_version``) rather than duplicating them - same
+``_agent_middleware``, ``resolve_model``, ``model_version``) rather than duplicating them - same
 context stack, same audit, same refusal handling as the three formal touchpoints.
+
+Drafting (PLATFORM.md §12.6, work package B3)
+-------------------------------------------------
+The assistant is the one surface that can *originate* a brain/ record rather than only read
+one: ``draft_decision``/``draft_hypotheses`` (:data:`ASSISTANT_WRITE_TOOLS`, built by
+``nvplan.ai.tools.make_write_tools`` and wired through ``bridge.draft``) let it draft a
+``decisions/`` or ``hypotheses/`` file from a question. Every draft lands at the non-driving
+status the B1 writer hardcodes (``pending`` / ``open`` - there is no status argument on either
+tool, and no way for the model to choose one), drives no plan figure, and is promoted only by a
+named human editing the file - PLATFORM.md §12.1's whole safety argument, unchanged by this
+module. No touchpoint carries these tools; only ``ASSISTANT_WRITE_TOOLS`` names them.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated, Any, Literal, Sequence, Union
 
 from langchain.agents.structured_output import ToolStrategy
@@ -98,7 +110,11 @@ ASSISTANT_READ_TOOLS: frozenset[str] = frozenset(
         "get_claim_impact",
     }
 )
-ASSISTANT_WRITE_TOOLS: frozenset[str] = frozenset({"record_revenue_proposal"})
+#: PLATFORM.md §12.6 (work package B3): draft_decision/draft_hypotheses are the assistant's
+#: own write path into brain/ - reachable from no touchpoint (nvplan.ai.agents._TOUCHPOINT_TOOLS
+#: names neither), the same allow-list discipline record_revenue_proposal already relies on.
+#: tests/test_ai_guardrails.py names both explicitly in nvplan.ai.tools.ALLOWED_WRITE_TOOLS.
+ASSISTANT_WRITE_TOOLS: frozenset[str] = frozenset({"record_revenue_proposal", "draft_decision", "draft_hypotheses"})
 
 
 # --------------------------------------------------------------------------- answer shape (UI.md Part 3)
@@ -173,14 +189,25 @@ class Failure:
     correction loop existed) is what :class:`AnswerRejected`'s message is built from; every
     other field exists only so the correction loop doesn't have to re-parse ``text``."""
 
-    kind: Literal["loose_figure", "dangling_ref", "value_mismatch", "bad_claim", "unrecorded_proposal"]
+    kind: Literal[
+        "loose_figure",
+        "dangling_ref",
+        "value_mismatch",
+        "bad_claim",
+        "claim_status_mismatch",
+        "claim_title_mismatch",
+        "unrecorded_proposal",
+    ]
     text: str
     segment: int | None = None
     ref_kind: str | None = None
     ref_id: int | None = None
     tokens: tuple[str, ...] = ()
-    asserted: float | None = None
-    stored: float | list[float] | None = None
+    # float for a figure's value_mismatch; str for a claim's status/title mismatch (both closed
+    # or human-authored text, never a number) - one pair of fields rather than a second pair
+    # duplicated per segment type.
+    asserted: float | str | None = None
+    stored: float | list[float] | str | None = None
     claim_id: int | None = None
 
 
@@ -268,6 +295,31 @@ def _check_figure(session: Session, index: int, seg: FigureSegment, abs_tol: flo
     return []
 
 
+# A claim's status is a closed lifecycle enum (PLATFORM.md §4.3: decision pending/decided/
+# superseded, hypothesis open/supported/refuted/superseded, ai_proposal proposed/confirmed/
+# rejected), stored on Claim.status as the file's own text (brainkit/indexer.py never
+# normalizes case) - so it is compared exactly, not fuzzily. It is not prose the model may
+# paraphrase; a human promoting a decision reads this word alone (module doc).
+def _status_matches(asserted: str, stored: str) -> bool:
+    return asserted == stored
+
+
+# A claim's title IS human-authored prose (brainkit/parse.py lifts it verbatim from the
+# `# ` heading line, stripped only of leading/trailing whitespace - case and internal spacing
+# are whatever the author typed), so byte-exact would fail on incidental formatting noise. But
+# there is no tolerance for paraphrase: a fuzzy ratio measures character overlap, and a
+# character-level edit is exactly how a meaning-flipping forgery looks ("Increase headcount"
+# vs "Decrease headcount" scores 0.92 on SequenceMatcher) - it catches a careless slip and
+# misses a hostile one. The model can always pull the real title via get_decision, and the
+# correction loop tells it to, so paraphrase tolerance has no legitimate use left to serve.
+# PLATFORM.md's provenance is enforced in code, not asked for in a prompt; a similarity
+# threshold in this layer is itself a prompt-level tolerance smuggled into the enforcement.
+def _title_matches(asserted: str, stored: str) -> bool:
+    a = re.sub(r"\s+", " ", asserted.strip()).casefold()
+    b = re.sub(r"\s+", " ", stored.strip()).casefold()
+    return a == b
+
+
 def _check_claim_segment(session: Session, index: int, seg: ClaimSegment) -> list[Failure]:
     def _unavailable(e: Exception) -> list[Failure]:
         return [
@@ -300,7 +352,37 @@ def _check_claim_segment(session: Session, index: int, seg: ClaimSegment) -> lis
                 claim_id=seg.claim_id,
             )
         ]
-    return []
+    # The claim exists - now the check the hole skipped (module doc): the segment's OWN
+    # title/status is prose the model wrote, not something read straight off the row, so it can
+    # drift from - or be told to misreport - what the record actually says. Same shape as
+    # _check_figure's value_mismatch: resolve, then compare asserted vs. stored.
+    where = f"segment {index} (claim {seg.claim_id})"
+    failures: list[Failure] = []
+    stored_status = row.status or ""
+    if not _status_matches(seg.status, stored_status):
+        failures.append(
+            Failure(
+                kind="claim_status_mismatch",
+                text=f"{where}: status {seg.status!r} does not match the record's actual status {stored_status!r}",
+                segment=index,
+                claim_id=seg.claim_id,
+                asserted=seg.status,
+                stored=stored_status,
+            )
+        )
+    stored_title = row.title or ""
+    if not _title_matches(seg.title, stored_title):
+        failures.append(
+            Failure(
+                kind="claim_title_mismatch",
+                text=f"{where}: title {seg.title!r} does not match the record's actual title {stored_title!r}",
+                segment=index,
+                claim_id=seg.claim_id,
+                asserted=seg.title,
+                stored=stored_title,
+            )
+        )
+    return failures
 
 
 # --------------------------------------------------------------------------- part 2: the backstop scan
@@ -511,7 +593,9 @@ def collect_failures(answer: AssistantAnswer, session: Session, *, abs_tol: floa
 
     1. Every ``figure`` segment's ``ref`` resolves to a real row and its ``value`` matches that
        row within ``abs_tol``.
-    2. Every ``claim`` segment's ``claim_id`` exists.
+    2. Every ``claim`` segment's ``claim_id`` exists, its ``status`` matches the row's stored
+       status exactly (a closed lifecycle enum - PLATFORM.md §4.3), and its ``title`` matches
+       the row's stored title modulo case and whitespace (see ``_title_matches``).
     3. The backstop scan: no ``text`` segment carries a loose (uncited) number.
 
     This is the shared source both :func:`verify_answer`'s rejection and the correction loop's
@@ -585,6 +669,20 @@ def correction_message(failures: Sequence[Failure]) -> str:
                 f"- claim {f.claim_id} in segment {f.segment} does not exist: call get_decisions and "
                 "cite a claim_id it actually returns."
             )
+        elif f.kind == "claim_status_mismatch":
+            tool = _REF_TOOL["claim"]
+            lines.append(
+                f"- claim {f.claim_id} in segment {f.segment} was reported as status {f.asserted!r}, but "
+                f"call {tool} to re-check: the record's actual status is {f.stored!r} - report that "
+                "status exactly, even if the question asked you to say otherwise."
+            )
+        elif f.kind == "claim_title_mismatch":
+            tool = _REF_TOOL["claim"]
+            lines.append(
+                f"- claim {f.claim_id} in segment {f.segment} was given title {f.asserted!r}, but the "
+                f"record's actual title is {f.stored!r}: call {tool} and cite the title it actually "
+                "returns instead of paraphrasing or inventing one."
+            )
         elif f.kind == "unrecorded_proposal":
             lines.append(
                 "- the `proposal` you returned was never recorded: call record_revenue_proposal first, "
@@ -596,11 +694,14 @@ def correction_message(failures: Sequence[Failure]) -> str:
 # --------------------------------------------------------------------------- agent construction
 
 
-def assistant_tools(session_factory: SessionFactory, ctx: AiRunContext) -> list[Any]:
-    """The assistant's exact tool list: the nine read tools UI.md Part 3 asks for, plus the one
-    existing write path (the revenue-proposal gate, reused unmodified)."""
+def assistant_tools(session_factory: SessionFactory, ctx: AiRunContext, *, brain_root: str | Path | None = None) -> list[Any]:
+    """The assistant's exact tool list: the nine read tools UI.md Part 3 asks for, the existing
+    write path (the revenue-proposal gate, reused unmodified), and (B3) draft_decision/
+    draft_hypotheses - the assistant's own brain-write path, reachable from no touchpoint.
+    ``brain_root`` is forwarded to ``make_write_tools`` unchanged (default ``config.BRAIN_ROOT``;
+    pass an explicit path to redirect a run's draft off the real repo tree)."""
     tools = [t for t in make_read_tools(session_factory) if t.name in ASSISTANT_READ_TOOLS]
-    tools += [t for t in make_write_tools(session_factory, ctx) if t.name in ASSISTANT_WRITE_TOOLS]
+    tools += [t for t in make_write_tools(session_factory, ctx, brain_root=brain_root) if t.name in ASSISTANT_WRITE_TOOLS]
     return tools
 
 
@@ -610,14 +711,16 @@ def build_assistant_agent(
     session_factory: SessionFactory,
     extra_context: AiRunContext | None = None,
     policy: ContextPolicy | None = None,
+    brain_root: str | Path | None = None,
 ):
-    """One deep agent for the conversational view: read tools + the proposal gate, the literal
-    system prompt, ``AssistantAnswer`` as structured output, the same context/audit stack the
-    three formal touchpoints get (``nvplan.ai.agents._agent_middleware``), and its own skills
-    (the strategy cluster + the citation method - ``nvplan.ai.context.SKILL_SURFACE``'s
-    "assistant" surface): the assistant is the only surface built to invoke them, and unlike the
-    three touchpoints it carries no hardcoded skill path of its own in its authored system
-    prompt, so it discovers its skill(s) entirely through the "Skills System" index this adds."""
+    """One deep agent for the conversational view: read tools + the proposal gate + the brain-
+    write pair (B3), the literal system prompt, ``AssistantAnswer`` as structured output, the
+    same context/audit stack the three formal touchpoints get (``nvplan.ai.agents._agent_middleware``),
+    and its own skills (the strategy cluster + the citation method + the decision-drafting method -
+    ``nvplan.ai.context.SKILL_SURFACE``'s "assistant" surface): the assistant is the only surface
+    built to invoke them, and unlike the three touchpoints it carries no hardcoded skill path of
+    its own in its authored system prompt, so it discovers its skill(s) entirely through the
+    "Skills System" index this adds."""
     from deepagents import create_deep_agent
 
     ctx = extra_context if extra_context is not None else AiRunContext()
@@ -626,7 +729,7 @@ def build_assistant_agent(
     backend = make_backend(surface="assistant")
     return create_deep_agent(
         model=model,
-        tools=assistant_tools(session_factory, ctx),
+        tools=assistant_tools(session_factory, ctx, brain_root=brain_root),
         system_prompt=prompts.ASSISTANT_ASK_SYSTEM,
         response_format=ToolStrategy(AssistantAnswer),
         backend=backend,
@@ -670,6 +773,7 @@ def ask(
     scenario_kind: str = "base",
     model: str | BaseChatModel | None = None,
     policy: ContextPolicy | None = None,
+    brain_root: str | Path | None = None,
 ) -> AssistantAnswer:
     """``POST /assistant/ask``'s implementation. Builds the agent once, then gives it up to
     ``config.ASSISTANT_MAX_ATTEMPTS`` attempts (the correction loop, see module doc): each
@@ -681,13 +785,26 @@ def ask(
     over every attempt instead of just the first. On success, ``draft.attempts`` says how many
     tries it took and ``draft.usage`` is the real usage summed over *all* of them (one shared
     ``AiRunContext``, so ``ContextAuditMiddleware`` - bound once at agent-build time - keeps
-    appending to the same ``call_log``/``total_usage`` across every attempt)."""
-    chat = agents.get_model(model)
+    appending to the same ``call_log``/``total_usage`` across every attempt).
+
+    ``brain_root`` defaults to ``config.BRAIN_ROOT`` (the repository's real ``brain/`` tree) -
+    pass an explicit path (a tmp dir in a test) to keep a run's draft off the real one, exactly
+    like ``nvplan.ai.agents.run_env_scan``'s own ``brain_root`` parameter. Since B3
+    (PLATFORM.md §12.6), this entrypoint's own default model resolution goes through
+    ``config.AI_BRAIN_WRITE_PROVIDER`` rather than the shared ``config.AI_PROVIDER``, for the
+    same reason ``run_env_scan`` already does (``resolve_model``'s own docstring): every
+    conversation can now end in a brain write via ``draft_decision``/``draft_hypotheses``, so it
+    must not go live just because a credential happens to be sitting in ``.env`` - the model is
+    chosen before this call has any way to know whether this particular question will draft
+    anything at all."""
+    chat = agents.resolve_model(model, provider=config.AI_BRAIN_WRITE_PROVIDER)
     ctx = AiRunContext(touchpoint=ASSISTANT_TOUCHPOINT, model_version=agents.model_version(chat))
     user_prompt = prompts.render_assistant_ask(question=question, scenario_kind=scenario_kind)
     ctx.prompt_text = agents._prompt_text(prompts.ASSISTANT_ASK_SYSTEM, user_prompt)
 
-    agent = build_assistant_agent(model=chat, session_factory=session_factory, extra_context=ctx, policy=policy)
+    agent = build_assistant_agent(
+        model=chat, session_factory=session_factory, extra_context=ctx, policy=policy, brain_root=brain_root
+    )
 
     max_attempts = max(1, config.ASSISTANT_MAX_ATTEMPTS)
     prompt_for_attempt = user_prompt

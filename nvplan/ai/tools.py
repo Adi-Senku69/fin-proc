@@ -1,10 +1,25 @@
 """LangChain tools over the planning database for the AI touchpoints.
 
 Read tools (``make_read_tools``) only SELECT. Write tools (``make_write_tools``)
-may insert exactly two things: ``external_note`` rows with ``source=ai_scan``
+may insert exactly two rows: ``external_note`` rows with ``source=ai_scan``
 and one ``ai_record`` row with ``status=proposed``. Nothing here touches
 ``plan_value``, ``statement_line``, ``actual``, ``parameter``, ``derivation``
 or ``scenario`` (tests/test_ai_guardrails.py checks the row counts).
+
+``make_write_tools`` also builds two more tools - ``draft_decision`` /
+``draft_hypotheses`` (PLATFORM.md §12.6, work package B3) - that write a real
+``brain/`` markdown file, never a database row, through ``bridge.draft`` (the B1
+writer's second real caller after ``bridge.ingest``). They are reachable ONLY from
+the assistant surface: ``nvplan.ai.assistant.ASSISTANT_WRITE_TOOLS`` names them,
+and no touchpoint's ``_TOUCHPOINT_TOOLS`` set in ``nvplan.ai.agents`` does -
+``touchpoint_tools``'s own name-filter is what keeps them off every touchpoint
+agent even though ``make_write_tools`` builds them unconditionally, exactly the
+same allow-list discipline ``record_revenue_proposal`` already relies on to reach
+only the revenue-proposal touchpoint and the assistant. Both always write at the
+non-driving status the brain's own writer hardcodes (``pending`` / ``open`` -
+there is no status argument on either tool, matching ``brainkit.writer``'s own
+contract that status is never the caller's to choose) and drive no plan figure
+until a human promotes the file by hand.
 
 Every tool opens its own session, commits (write tools) and returns a JSON
 string, because tool results become model-visible text. Row-oriented results
@@ -28,7 +43,10 @@ Run context
   id in ``ai_record_id`` (a second call in the same run updates that row);
 * ``record_external_note`` appends the new note ids to ``note_ids``; the
   env-scan entrypoint inserts its ``ai_record`` after the run and back-fills
-  ``external_note.ai_record_id`` for those ids.
+  ``external_note.ai_record_id`` for those ids;
+* ``draft_decision``/``draft_hypotheses`` read nothing from ``ctx`` - a brain
+  write is not part of any touchpoint's own ``ai_record``, so it needs none of
+  the run bookkeeping above.
 """
 
 from __future__ import annotations
@@ -36,13 +54,16 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 import yaml
 from langchain_core.tools import BaseTool, tool
+from pydantic import BaseModel, ConfigDict, Field as PydanticField
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from nvplan import config
 from nvplan.ai.figures import _categories, _latest_parameters, _scenario_by_kind, plan_vs_actual  # noqa: F401 (re-exported)
 from nvplan.config import DATA_DIR
 from nvplan.core import DerivationLedger, to_wide
@@ -68,13 +89,23 @@ from nvplan.services.trace import find_plan_value, trace_plan_value
 # raising when the tables don't exist (a finance-only database) - see ``_claims_unavailable``.
 from provenance import Claim, ClaimKind, Evidence
 
+# bridge/ is the only package allowed to import both nvplan and brainkit (PLATFORM.md §7.1);
+# this module reaches the B1 write substrate through it, never through brainkit directly - the
+# same choice nvplan.ai.agents already makes for bridge.ingest (B2). draft_decision/
+# draft_hypotheses below (B3, PLATFORM.md §12.6) are this substrate's second real caller.
+from bridge.draft import draft_decision_and_index, draft_hypotheses_and_index
+
 SessionFactory = Callable[[], Session]
 
 ENV_FRAMEWORK_PATH = DATA_DIR / "env_framework.yaml"
 CONTROL_TABLE_PATH = DATA_DIR / "control_table.yaml"
 
 # The only tool names allowed to write anything. Checked by the guardrail test.
-ALLOWED_WRITE_TOOLS: frozenset[str] = frozenset({"record_external_note", "record_revenue_proposal"})
+# draft_decision/draft_hypotheses (B3) write a brain/ markdown file, never a database row -
+# see the module docstring - and are reachable only from the assistant surface.
+ALLOWED_WRITE_TOOLS: frozenset[str] = frozenset(
+    {"record_external_note", "record_revenue_proposal", "draft_decision", "draft_hypotheses"}
+)
 
 
 @dataclass
@@ -150,6 +181,10 @@ def _note_dict(n: ExternalNote, cats: dict[int, Category]) -> dict[str, Any]:
         "author": n.author,
         "source": n.source.value,
         "ai_record_id": n.ai_record_id,
+        # B2: set when this note is the derived projection of a brain/ingestion/ record - cite it
+        # as ref kind "claim", id=source_claim_id, the same way a decision's quantified effect is
+        # cited (nvplan.ai.tools.get_decision's own docstring).
+        "source_claim_id": n.source_claim_id,
     }
 
 
@@ -538,9 +573,37 @@ def record_proposal(
     return rec
 
 
-def make_write_tools(session_factory: SessionFactory, ai_record_id_holder: AiRunContext) -> list[BaseTool]:
-    """The only two tools that write: an ai_scan external note and the revenue proposal."""
+class HypothesisItemArg(BaseModel):
+    """One hypothesis for the ``draft_hypotheses`` tool (PLATFORM.md §12.6, work package B3).
+
+    There is no ``status`` field, and ``extra="forbid"`` means one cannot be smuggled in as
+    an unrecognised key either: a tool call that tries ends in a validation error before this
+    module's own code ever runs, closing the same channel ``brainkit.writer`` already closes
+    one layer down (a hypothesis item's ``status`` key, if present, is never read) at the tool
+    boundary itself - see tests/test_ai_guardrails.py's status-cannot-be-chosen tests, which
+    exercise exactly this."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    risk: str = PydanticField(description="One of: value, usability, feasibility, viability, other.")
+    belief: str
+    origin: str = "proactive"
+    confidence: str = "medium"
+    evidence_for: list[list[str]] = PydanticField(default_factory=list, description="[text, provenance tag] pairs.")
+    evidence_against: list[list[str]] = PydanticField(default_factory=list, description="[text, provenance tag] pairs.")
+    open_questions: list[str] = PydanticField(default_factory=list)
+
+
+def make_write_tools(
+    session_factory: SessionFactory, ai_record_id_holder: AiRunContext, *, brain_root: str | Path | None = None
+) -> list[BaseTool]:
+    """The four tools that write: an ai_scan external note, the revenue proposal, and (B3)
+    draft_decision/draft_hypotheses, which write a brain/ markdown file rather than a database
+    row. ``brain_root`` defaults to ``config.BRAIN_ROOT`` (the repository's real brain/ tree) -
+    pass an explicit path (a tmp dir in a test) to keep a run's draft off the real one, exactly
+    like ``nvplan.ai.agents.run_env_scan``'s own ``brain_root`` parameter."""
     ctx = ai_record_id_holder
+    root = Path(brain_root) if brain_root is not None else config.BRAIN_ROOT
 
     @tool
     def record_external_note(
@@ -604,4 +667,88 @@ def make_write_tools(session_factory: SessionFactory, ai_record_id_holder: AiRun
                 }
             )
 
-    return [record_external_note, record_revenue_proposal]
+    @tool
+    def draft_decision(
+        slug: str,
+        title: str,
+        date: str,
+        context: str,
+        options: list[str],
+        decision: str,
+        why: str,
+        evidence: list[list[str]],
+        reversal: str,
+        not_doing: list[list[str]] | None = None,
+        ambiguities: str | None = None,
+    ) -> str:
+        """Draft a decision from a question, for a human to promote later (PLATFORM.md §12.6).
+        Always writes at status=pending - there is no status argument on this tool at all, and
+        none is ever read even if one were somehow attached elsewhere; a drafted decision drives
+        no plan figure until a named human edits the file to promote it. slug: lowercase-hyphen
+        only (e.g. "sunset-legacy-import"); the file lands at decisions/<date>-<slug>.md. date:
+        YYYY-MM-DD. evidence/not_doing: each item is [text, tag] where tag is exactly one closed
+        provenance tag (e.g. "(industry-knowledge)", "(intuition, <name>, YYYY-MM-DD)", or a
+        "[source/...](../source/...)"/"[ingestion/...](../ingestion/...)" link to a real file) -
+        an unsourced or malformed tag is refused before anything is written. reversal: a specific,
+        observable condition that would overturn this decision (not "if things change"/"TBD"/
+        "unknown") - required now because the draft is checked as it would be once promoted, so a
+        vague reversal condition is refused at draft time rather than only once a human promotes
+        it. Returns the drafted path and its indexed claim id, or the validator's findings if the
+        draft was refused - nothing is written on refusal."""
+        with session_factory() as s:
+            outcome = draft_decision_and_index(
+                s,
+                root,
+                slug=slug,
+                title=title,
+                date=date,
+                context=context,
+                options=list(options),
+                decision=decision,
+                why=why,
+                evidence=[tuple(pair) for pair in evidence],
+                not_doing=[tuple(pair) for pair in (not_doing or [])],
+                reversal=reversal,
+                ambiguities=ambiguities,
+            )
+        if not outcome.result.written or outcome.result.path is None:
+            return _err(
+                "draft refused: " + "; ".join(f"{f.code}: {f.message}" for f in outcome.result.findings)
+            )
+        return _dumps(
+            {
+                "path": str(outcome.result.path.resolve().relative_to(root.resolve()).as_posix()),
+                "claim_id": outcome.claim_id,
+                "status": "pending",
+                "note": "drafted at status=pending; a human must promote it before it can drive any figure",
+            }
+        )
+
+    @tool
+    def draft_hypotheses(feature_slug: str, title: str, hypotheses: list[HypothesisItemArg]) -> str:
+        """Draft a feature's hypotheses file, for a human to promote later (PLATFORM.md §12.6).
+        Every hypothesis always writes status=open - there is no status field anywhere in
+        ``hypotheses`` (an extra "status" key on any item is rejected outright, not ignored), and
+        none of them counts as tested until a named human promotes one by editing the file.
+        feature_slug: lowercase-hyphen only; the file lands at hypotheses/<feature_slug>.md. Each
+        item's evidence_for/evidence_against are [text, tag] pairs, same provenance-tag rule as
+        draft_decision. Returns the drafted path and its indexed claim id, or the validator's
+        findings if the draft was refused - nothing is written on refusal."""
+        with session_factory() as s:
+            outcome = draft_hypotheses_and_index(
+                s, root, feature_slug=feature_slug, title=title, hypotheses=[h.model_dump() for h in hypotheses]
+            )
+        if not outcome.result.written or outcome.result.path is None:
+            return _err(
+                "draft refused: " + "; ".join(f"{f.code}: {f.message}" for f in outcome.result.findings)
+            )
+        return _dumps(
+            {
+                "path": str(outcome.result.path.resolve().relative_to(root.resolve()).as_posix()),
+                "claim_id": outcome.claim_id,
+                "status": "open",
+                "note": "drafted with every hypothesis at status=open; a human must promote one before it counts as supported",
+            }
+        )
+
+    return [record_external_note, record_revenue_proposal, draft_decision, draft_hypotheses]

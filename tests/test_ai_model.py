@@ -6,6 +6,7 @@ Nothing here calls the API. The live counterparts are in ``tests/test_live_model
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 
@@ -30,7 +31,7 @@ from nvplan.ai import (
 )
 from nvplan.ai.agents import refusal_details, workspace_headers
 from nvplan.ai.audit import CALL_LOG_KEYS, usage_entry
-from nvplan.ai.fake import FakeToolCallingModel, refusal, refusing_model, scripted_deviation_model, tool_call
+from nvplan.ai.fake import DeterministicChatModel, FakeToolCallingModel, deterministic_model, refusal, refusing_model, scripted_deviation_model, tool_call
 from nvplan.api.app import create_app
 from nvplan.db.models import AiRecord, ExternalNote
 from test_ai_fixtures import PLAN_YEAR, ai_db  # noqa: F401 (fixture)
@@ -92,6 +93,13 @@ def test_bad_effort_and_bad_max_tokens_fail_loudly():
 
     bad_tokens = _config_probe("print(config.AI_MAX_TOKENS)", NVPLAN_AI_MAX_TOKENS="lots")
     assert bad_tokens.returncode != 0 and "NVPLAN_AI_MAX_TOKENS='lots'" in bad_tokens.stderr
+
+
+def test_provider_defaults_to_auto_and_rejects_bad_values():
+    assert config.AI_PROVIDER in config.AI_PROVIDERS
+    bad = _config_probe("print(config.AI_PROVIDER)", NVPLAN_AI_PROVIDER="sometimes")
+    assert bad.returncode != 0
+    assert "NVPLAN_AI_PROVIDER='sometimes'" in bad.stderr and "auto, live, deterministic" in bad.stderr
 
 
 def test_dotenv_is_loaded_at_import_without_overriding_the_environment():
@@ -208,6 +216,124 @@ def test_build_chat_model_overrides_are_cheap(dummy_key):
     assert chat.max_tokens == 64 and chat.reasoning_effort == "low"
     with pytest.raises(ValueError, match="turbo"):
         build_chat_model(effort="turbo")
+
+
+# --------------------------------------------------------------------------- resolve_model (A1)
+
+
+def test_resolve_model_passes_a_basechatmodel_through_regardless_of_provider(monkeypatch):
+    from nvplan.ai.agents import resolve_model
+
+    fake = FakeToolCallingModel(responses=[])
+    for provider in ("auto", "live", "deterministic"):
+        monkeypatch.setattr(config, "AI_PROVIDER", provider, raising=False)
+        assert resolve_model(fake) is fake
+
+
+def test_resolve_model_auto_picks_deterministic_without_a_credential(no_credentials):
+    from nvplan.ai.agents import resolve_model
+
+    assert isinstance(resolve_model(None), DeterministicChatModel)
+
+
+def test_resolve_model_auto_picks_the_real_client_with_a_credential(dummy_key):
+    from nvplan.ai.agents import resolve_model
+
+    assert type(resolve_model(None)).__name__ == "ChatAnthropic"
+
+
+def test_resolve_model_deterministic_override_ignores_a_present_credential(dummy_key, monkeypatch):
+    from nvplan.ai.agents import resolve_model
+
+    monkeypatch.setattr(config, "AI_PROVIDER", "deterministic", raising=False)
+    assert isinstance(resolve_model(None), DeterministicChatModel)
+
+
+def test_resolve_model_live_override_still_raises_without_a_credential(no_credentials, monkeypatch):
+    from nvplan.ai.agents import resolve_model
+
+    monkeypatch.setattr(config, "AI_PROVIDER", "live", raising=False)
+    with pytest.raises(MissingCredentials):
+        resolve_model(None)
+
+
+# --------------------------------------------------------------------------- the deterministic provider itself
+
+
+def _bound(*names: str) -> DeterministicChatModel:
+    """A fresh deterministic model bound to tool names the way deepagents binds real ones -
+    a plain object carrying ``.name`` is enough, since DeterministicChatModel.bind_tools only
+    ever reads that attribute (see nvplan.ai.fake._tool_name)."""
+    class _Named:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    return deterministic_model().bind_tools([_Named(n) for n in names])
+
+
+def _tool_msg(name: str, call_id: str, payload) -> "ToolMessage":
+    from langchain_core.messages import ToolMessage
+
+    return ToolMessage(content=json.dumps(payload), tool_call_id=call_id, name=name)
+
+
+def test_deterministic_revenue_proposal_clamps_to_the_control_table_bound():
+    """The one guardrail this touchpoint has (control_table.yaml: max_deviation_from_default_pct)
+    must actually bind on the deterministic provider's own arithmetic, not only on a scripted
+    test double - proving it is "a real quality floor", not a stub."""
+    from langchain_core.messages import HumanMessage
+
+    model = _bound("get_actuals", "get_external_notes", "get_control_table", "record_revenue_proposal", "RevenueProposal")
+    human = HumanMessage(
+        "Scenario: base. Target year: 2027.\n\nValorized default revenue for 2027: 20,000.0 k EUR.\n"
+    )
+    first = model.invoke([human])
+    assert {c["name"] for c in first.tool_calls} == {"get_actuals", "get_external_notes", "get_control_table"}
+
+    history = [
+        human,
+        first,
+        _tool_msg("get_actuals", "det-act", {"rows": []}),
+        _tool_msg(
+            "get_external_notes",
+            "det-notes",
+            {"rows": [{"id": 7, "category_code": "REV", "year": 2027, "text": "Contract ends; a 90% reduction expected."}]},
+        ),
+        _tool_msg("get_control_table", "det-rules", {"revenue_proposal": {"max_deviation_from_default_pct": 25, "must_cite_note": True}}),
+    ]
+    second = model.invoke(history)
+    assert second.tool_calls[0]["name"] == "record_revenue_proposal"
+    args = second.tool_calls[0]["args"]
+    assert args["cited_note_ids"] == [7]
+    # a live model reading "90% reduction" might propose exactly that; the deterministic
+    # provider must clamp to the control table's 25% bound so record_revenue_proposal never
+    # rejects its own default.
+    assert args["proposed_value"] == pytest.approx(20_000.0 * 0.75, rel=1e-3)
+
+    history += [second, _tool_msg("record_revenue_proposal", "det-prop", {"ai_record_id": 1, "status": "proposed"})]
+    third = model.invoke(history)
+    assert third.tool_calls[0]["name"] == "RevenueProposal"
+    assert third.tool_calls[0]["args"]["proposed_value"] == pytest.approx(args["proposed_value"])
+    assert third.tool_calls[0]["args"]["cited_note_ids"] == [7]
+
+
+def test_deterministic_revenue_proposal_leaves_default_unchanged_without_a_quantified_note():
+    from langchain_core.messages import HumanMessage
+
+    model = _bound("get_actuals", "get_external_notes", "get_control_table", "record_revenue_proposal", "RevenueProposal")
+    human = HumanMessage("Scenario: base. Target year: 2028.\n\nValorized default revenue for 2028: 15,500.0 k EUR.\n")
+    first = model.invoke([human])
+    history = [
+        human,
+        first,
+        _tool_msg("get_actuals", "det-act", {"rows": []}),
+        _tool_msg("get_external_notes", "det-notes", {"rows": [{"id": 3, "category_code": "PERS", "year": 2028, "text": "wage rise"}]}),
+        _tool_msg("get_control_table", "det-rules", {"revenue_proposal": {"max_deviation_from_default_pct": 25, "must_cite_note": True}}),
+    ]
+    second = model.invoke(history)
+    args = second.tool_calls[0]["args"]
+    assert args["proposed_value"] == pytest.approx(15_500.0)
+    assert args["cited_note_ids"] == [3]  # must_cite_note satisfied even with nothing REV-specific
 
 
 # --------------------------------------------------------------------------- refusal handling

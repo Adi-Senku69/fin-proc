@@ -70,6 +70,64 @@ the view so a state is linkable.
 - Readable at 1280 wide, degrades to a single column below 900. Dark and light both legible.
 - No emoji as interface elements; text and shape carry meaning so it stays legible when projected.
 
+### Design language (adopted from the reference React app, 2026-09-20)
+
+The client's own reference implementation (a separate repo: a Vite/React app built on Tailwind CSS,
+`apps/web` in the finance spec's proof-of-concept) has a considered visual language even though this
+build cannot use its stack. **No build step** (above) still stands — nothing here pulls in React,
+Tailwind, or any bundler. What moved is the *design*, read out of the reference's components and
+re-expressed as hand-written CSS custom properties and plain selectors in `nvplan/api/static/app.css`.
+
+**What was taken, concretely:**
+
+- **Palette.** The reference's Tailwind slate/indigo/emerald/amber/rose/violet/sky scale, ported as
+  hex values on named tokens (`--bg`, `--fg`, `--accent`, `--ok`, `--warn`, `--error`, `--ai`, `--info`,
+  each with a `-bg`/`-border` pair) rather than utility classes. The mapping follows the reference's own
+  usage exactly where it has one: amber = illustrative/notice (`IllustrativeBadge`, `ForecastNotice`
+  is sky instead — folded into `--info`), violet = `ai_proposed` (`DerivationPanel`'s
+  `PATH_BADGE_CLASSES`), emerald = confirmed/good (the `ProposalScreen` confirm step). Two concepts
+  this app has that the reference doesn't — `decided` and `illustrative` as first-class chip kinds —
+  alias the closest reference hue (`--decided` = `--ok`/emerald, `--illustrative` = `--warn`/amber)
+  instead of inventing new ones, so the total vocabulary stays the same six hues the reference uses.
+- **Shape.** Rounded-full pill badges, rounded-md/-lg cards with a 1px border and a soft `shadow-sm`,
+  a segmented-control look for the scenario/statement/backtest-basis tabs (a quiet track, the active
+  option raised on a white chip) copying `ScenarioTabs.tsx`/`BacktestScreen.tsx` exactly. Prompt,
+  formula and other code-ish boxes became the reference's own quiet `bg-slate-50` monospace block
+  instead of the previous dark "terminal" look.
+- **Type/spacing rhythm.** Muted, uppercase, letter-spaced "eyebrow" labels for section headings and
+  table headers (`text-xs font-semibold tracking-wide text-slate-500 uppercase` in the reference); a
+  clear light/dark hierarchy between body text and headings/figures (`--fg` vs `--fg-strong`).
+- **Left rail, not a top nav.** The reference's `Nav.tsx` is a horizontal underline-tab bar for seven
+  screens. This build keeps its existing **vertical** rail — a deliberate, documented deviation, not
+  an oversight: eight views (including Brain and Ask) plus a persistent health badge crowd a
+  single-row nav much sooner, and the vertical rail already had the correct responsive fallback
+  (collapses to a horizontal scroller under 900px). The rail's *colours* were still ported: a light
+  panel, slate body text, and an indigo active state replace the previous dark sidebar.
+- **Dark mode.** The reference has none (a Tailwind build with zero `dark:` variants anywhere in
+  `apps/web/src`). This build's existing `prefers-color-scheme: dark` block predates this pass and
+  was kept — not "taken" from the reference, and not newly invented for it either — because dropping
+  a working accessibility mode nobody asked to lose isn't what porting a design language means. Its
+  palette was retuned to the same indigo/emerald/amber/rose/violet/sky mapping at dark-appropriate
+  values so both modes read as one system.
+- **Provenance stamp kept distinct.** This app's own prior design decision — a tag chip (the literal
+  `PLATFORM.md §4.1` provenance string) renders as a bold, dark "stamp," separate from ordinary
+  badges — doesn't exist in the reference and was kept on purpose (`--tag-bg`/`--tag-fg`, decoupled
+  from the now-light `--code-bg`/`--code-fg`), so lightening the code/formula boxes didn't flatten
+  the one piece of chrome this app relies on to make provenance impossible to miss.
+
+**Brain and Ask** have no counterpart in the reference (it has no decision/evidence model and no
+chat). Both were designed to sit inside the ported language rather than alongside it: Brain's status
+chips reuse the same `chip-status`/`chip-path` vocabulary and hue mapping as every other status
+surface in the app (Plan's marked cells, the AI records table, Trace's claim block); Ask's figure and
+claim chips are the same pill shape in the accent/decided colours, styled as inline citations ("part
+of the sentence, not a footnote") rather than as a new component family, and its refusal panel reuses
+the bold two-tone treatment `error`/`error-bg` already established for `.error-panel`.
+
+Every view was re-verified against the live API after this pass (see the phase table's own "done
+when" criteria) — endpoints, response shapes and the click-through-to-derivation interaction are
+unchanged; only `app.css` (values, plus a few additive rules — segmented tabs, `--*-border` tokens,
+card shadows) changed.
+
 ## Phases
 
 | Phase | Work | Done when |

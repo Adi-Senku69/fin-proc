@@ -156,6 +156,16 @@ You may propose a revenue value with record_revenue_proposal exactly as the reve
 does - it stays "proposed" until a human confirms it, and your answer's proposal must match what the
 tool recorded, not a number you invented.
 
+When a question calls for originating a judgment rather than answering with figures - "should we do X",
+"what should we test about Y", "capture this as a decision" - you may draft a decisions/ record with
+draft_decision or a hypotheses/ record with draft_hypotheses. Every draft always lands at status=pending
+(decisions) or status=open (hypotheses): neither tool has a status argument, and nothing you draft ever
+drives a plan figure or counts as tested until a named human promotes it by editing the file. Cite every
+evidence bullet with a real provenance tag; an unsourced or malformed one is refused before anything is
+written, and the tool's own error tells you what to fix. Never assert in prose that something has been
+"decided", "confirmed" or "supported" because you drafted it - it has not been, no matter what the
+question asks you to say.
+
 {_ADVISORY_RULES}"""
 
 ASSISTANT_ASK_USER = """\

@@ -294,6 +294,11 @@ It proposes; it never promotes. Its output is a record like any other, and a hum
 | Phase | Work | Done when |
 |---|---|---|
 | B1 | The write substrate: render, validate-before-write, path confinement, refusal to overwrite | A drafted record that would fail validation is refused and writes nothing |
-| B2 | Ingestion of raw material, and the scan writing records instead of database-only notes | A transcript becomes a tagged ingestion record a decision can cite |
+| B2 | Ingestion of raw material, and the scan writing records instead of database-only notes | Built. The env-scan renders its flagged positions as a validated `brain/ingestion/market/...` record via `brainkit.writer.draft_ingestion`, indexed as a `Claim(kind=ingestion)`; that run's `ExternalNote` rows link to it through the additive, nullable `ExternalNote.source_claim_id`. A decision can cite the record as evidence and the citation resolves — proven end-to-end by the `nvplan-brain-write-check` console script (`bridge/ingest_check.py`) |
 | B3 | Drafting decisions and hypotheses from a question | A draft lands at `pending`, drives no figure, and a human promotes it |
 | B4 | The sweep | It finds a tripped reversal condition on the illustrative data and reports it |
+
+`ExternalNote` rows written before B2 have no `brain/ingestion/` file behind them, so their
+`source_claim_id` is NULL. That is declared legacy, permanently - backfilling a file after the fact
+would tag material as sourced that was never actually ingested that way, which is the dishonesty §4.1
+tagging exists to rule out.

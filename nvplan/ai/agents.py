@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from datetime import date as _date
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -84,6 +85,11 @@ from nvplan.ai.tools import (
     record_proposal,
 )
 from nvplan.db.models import Actual, AiRecord, AiStatus, Category, ExternalNote, Touchpoint
+
+# B2 (PLATFORM.md §12.4): the one function that turns an env-scan run's flagged positions into a
+# brain/ingestion/ record and indexes it. Imported from bridge/, never from brainkit/ directly -
+# see bridge/ingest.py's module docstring for why nvplan.ai stays off that import.
+from bridge.ingest import ScanFinding, write_env_scan_ingestion
 
 TOUCHPOINTS: tuple[str, ...] = ("env_scan", "revenue_proposal", "deviation_explanation")
 
@@ -281,10 +287,61 @@ def get_model(model: str | BaseChatModel | None = None) -> BaseChatModel:
     A ``BaseChatModel`` is passed straight through untouched (that is how every offline test
     injects ``nvplan.ai.fake``). Anything else builds the configured ``ChatAnthropic``
     (``config.AI_MODEL`` / ``AI_MAX_TOKENS`` / ``AI_EFFORT`` / ``AI_BETAS``) and raises
-    ``MissingCredentials`` with ``credential_hint()`` when there is no key."""
+    ``MissingCredentials`` with ``credential_hint()`` when there is no key.
+
+    Unconditional: this is what ``nvplan-ai-check``, ``nvplan-demo --live`` and the API's own
+    ``resolve_model`` (``nvplan/api/app.py``) call when they specifically want the real client or
+    a loud failure. The three touchpoints and the assistant do not call this directly for their
+    own default (``model=None``) resolution any more - see :func:`resolve_model`."""
     if isinstance(model, BaseChatModel):
         return model
     return build_chat_model(model)
+
+
+def resolve_model(model: str | BaseChatModel | None = None, *, provider: str | None = None) -> BaseChatModel:
+    """A1: the one explicit place that decides which model/provider an AI-layer run actually
+    uses. Every entrypoint that owns a ``model=None`` default (``run_env_scan``,
+    ``run_revenue_proposal``, ``run_deviation_explanation``, ``nvplan.ai.assistant.ask``) calls
+    this instead of :func:`get_model` directly, so a missing credential never means the AI layer
+    cannot run - it means the deterministic, offline provider
+    (``nvplan.ai.fake.deterministic_model``) runs instead, with no network and no cost.
+
+    * A ``BaseChatModel`` handed in (a scripted fake in a test, a real client an API route
+      already built) is returned untouched, exactly like :func:`get_model` - this is the escape
+      hatch every existing test and the API's own model injection already relies on, and it is
+      unaffected by ``provider``/``config.AI_PROVIDER``.
+    * ``provider`` (B2): an explicit override of which closed-enum value governs this call,
+      taking precedence over ``config.AI_PROVIDER`` when given - the three branches below then
+      read exactly the same way against it. ``run_env_scan`` passes
+      ``config.AI_BRAIN_WRITE_PROVIDER`` here instead of relying on the shared default, because it
+      is the one entrypoint that can write a brain/ file (PLATFORM.md §12.4) and must not silently
+      go live just because ``config.AI_PROVIDER`` (or a key sitting in ``.env`` for the other two
+      touchpoints) says "auto". Every other caller leaves this ``None`` and gets the original,
+      unchanged behaviour below.
+    * effective value ``"live"``: always :func:`get_model` - the real client, or
+      ``MissingCredentials`` with no key. A deliberate override, never a silent live attempt.
+    * effective value ``"deterministic"``: always the offline provider, even with a credential
+      present - the explicit opt-out (CI; iterating on something downstream of an AI write without
+      spending money or fighting model nondeterminism).
+    * effective value ``"auto"`` (the default, from ``config.AI_PROVIDER`` when ``provider`` is not
+      given): :func:`get_model` when :func:`credentials_available` is true (unchanged behaviour
+      with a key in ``.env`` or the environment - the real model runs exactly as it always did),
+      the deterministic provider otherwise. This is what makes a plain call with no key and no
+      override run end to end."""
+    if isinstance(model, BaseChatModel):
+        return model
+    effective_provider = provider if provider is not None else config.AI_PROVIDER
+    if effective_provider == "live":
+        return get_model(model)
+    if effective_provider == "deterministic":
+        from nvplan.ai.fake import deterministic_model
+
+        return deterministic_model()
+    if credentials_available():
+        return get_model(model)
+    from nvplan.ai.fake import deterministic_model
+
+    return deterministic_model()
 
 
 def model_version(model: BaseChatModel) -> str:
@@ -654,9 +711,21 @@ def run_env_scan(
     model: str | BaseChatModel | None = None,
     positions_subset: list[str] | None = None,
     policy: ContextPolicy | None = None,
+    brain_root: str | Path | None = None,
 ) -> AiRecord:
-    """Touchpoint 1. Runs the scan, persists the ai_record and links the notes it wrote."""
-    chat = get_model(model)
+    """Touchpoint 1. Runs the scan, persists the ai_record, links the notes it wrote, and (B2)
+    drafts the scan's flagged positions as a brain/ingestion/market/ record - indexing it and
+    re-pointing those same notes at the resulting claim (``ExternalNote.source_claim_id``) so the
+    markdown file, not the note rows, is the record (PLATFORM.md §3, §12.4).
+
+    ``brain_root`` defaults to ``config.BRAIN_ROOT`` (the repository's real ``brain/`` tree) -
+    pass an explicit path (a tmp dir in a test) to keep a run's write off the real one.
+
+    This is the one entrypoint that resolves its default model through
+    ``config.AI_BRAIN_WRITE_PROVIDER`` rather than the shared ``config.AI_PROVIDER`` (see
+    ``resolve_model``'s own docstring): it is the one touchpoint that can write into the source of
+    truth, so it must not go live just because a credential happens to be sitting in ``.env``."""
+    chat = resolve_model(model, provider=config.AI_BRAIN_WRITE_PROVIDER)
     ctx = AiRunContext(touchpoint=Touchpoint.env_scan, model_version=model_version(chat))
     framework_text, n_pos = _framework_text(positions_subset)
     with session_factory() as s:
@@ -691,6 +760,30 @@ def run_env_scan(
                 note.ai_record_id = rec.id
         s.commit()
         ctx.ai_record_id = rec.id
+
+        # B2: the flagged positions ARE the scan's output - render them as one ingestion record
+        # rather than leaving record_external_note's rows as the terminal artifact. Skipped when
+        # there is nothing to write (no flagged position); write_env_scan_ingestion never raises
+        # (a refused draft or a missing provenance schema both come back as claim_id=None), so a
+        # scan always still completes and returns its ai_record either way.
+        if scan.flagged:
+            scan_date = _date.today().isoformat()
+            outcome = write_env_scan_ingestion(
+                s,
+                brain_root if brain_root is not None else config.BRAIN_ROOT,
+                slug=f"env-scan-{rec.id}",
+                date=scan_date,
+                title=f"Environmental scan {scan_date} (ai_record {rec.id})",
+                summary=scan.summary,
+                findings=[
+                    ScanFinding(domain=f.domain, position=f.position, materiality=f.materiality, reasoning=f.reasoning)
+                    for f in scan.flagged
+                ],
+            )
+            if outcome.claim_id is not None and ctx.note_ids:
+                for note in s.scalars(select(ExternalNote).where(ExternalNote.id.in_(ctx.note_ids))).all():
+                    note.source_claim_id = outcome.claim_id
+                s.commit()
         return rec
 
 
@@ -704,7 +797,7 @@ def run_revenue_proposal(
     policy: ContextPolicy | None = None,
 ) -> AiRecord:
     """Touchpoint 2. ``default_value`` is the valorized default revenue for ``year`` (k EUR)."""
-    chat = get_model(model)
+    chat = resolve_model(model)
     with session_factory() as s:
         scenario = _scenario_by_kind(s, scenario_kind)
         ctx = AiRunContext(
@@ -760,7 +853,7 @@ def run_deviation_explanation(
     The structured result is cross-checked against the deterministic plan-vs-actual table
     first (``figures.check_explanation``); on any mismatch ``ExplanationRejected`` is raised
     and nothing is persisted."""
-    chat = get_model(model)
+    chat = resolve_model(model)
     with session_factory() as s:
         scenario = _scenario_by_kind(s, scenario_kind)
         if scenario is None:

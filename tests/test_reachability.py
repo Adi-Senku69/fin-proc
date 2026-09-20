@@ -33,6 +33,7 @@ from __future__ import annotations
 import inspect
 import re
 
+import pytest
 from langchain_core.tools import BaseTool
 
 from nvplan.ai.agents import _TOUCHPOINT_TOOLS, build_advisor, build_touchpoint_agent, touchpoint_subagents
@@ -259,3 +260,196 @@ def test_assistant_owned_skills_are_reachable_by_the_assistant():
         f"add skills=[SKILLS_SOURCE] to build_assistant_agent's create_deep_agent(...) call in "
         f"nvplan/ai/assistant.py"
     )
+
+
+# --------------------------------------------------------------------------- 6: A1 - the keyless default is real
+#
+# The miss this guards against: a provider seam that LOOKS wired (resolve_model exists, is
+# documented, is unit-tested in isolation) while every real entrypoint still calls get_model
+# directly - which raises MissingCredentials with no key, exactly as before A1, and the "offline
+# by default" claim would be false for anyone who doesn't happen to read the diff. Checked two
+# ways, the same shape test_reachability.py already uses for skills: (1) the object actually
+# constructed under default configuration with no credential, and (2) static inspection of each
+# entrypoint's own source, so a future edit that quietly reverts one call site to get_model(model)
+# fails here even though get_model() itself still works (by design - see its own docstring).
+
+
+def test_default_resolution_takes_the_deterministic_path_with_no_credential(monkeypatch):
+    from nvplan.ai import agents
+    from nvplan.ai.fake import DeterministicChatModel
+
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(agents, "_ant_cli", lambda: None)
+    monkeypatch.setattr(agents.config, "AI_PROVIDER", "auto", raising=False)
+
+    assert agents.credentials_available() is False
+    model = agents.resolve_model(None)
+    assert isinstance(model, DeterministicChatModel), (
+        "resolve_model(None) built something other than the deterministic provider with no "
+        "credential and config.AI_PROVIDER == 'auto' - the AI layer would silently require a "
+        "key again"
+    )
+
+
+def test_default_resolution_stays_live_when_a_credential_is_present(monkeypatch):
+    """The other half: a credential must still drive the real client under "auto" - A1 must not
+    make the deterministic provider win unconditionally."""
+    from nvplan.ai import agents
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-reachability-dummy")
+    monkeypatch.setattr(agents.config, "AI_PROVIDER", "auto", raising=False)
+    model = agents.resolve_model(None)
+    assert type(model).__name__ == "ChatAnthropic"
+
+
+def test_provider_override_forces_deterministic_even_with_a_credential(monkeypatch):
+    from nvplan.ai import agents
+    from nvplan.ai.fake import DeterministicChatModel
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-reachability-dummy")
+    monkeypatch.setattr(agents.config, "AI_PROVIDER", "deterministic", raising=False)
+    assert isinstance(agents.resolve_model(None), DeterministicChatModel)
+
+
+def test_provider_override_forces_live_and_still_raises_without_a_credential(monkeypatch):
+    """"live" is a deliberate override, never a silent fallback: with no key it must still raise
+    MissingCredentials exactly as get_model() does, not quietly hand back the deterministic
+    provider."""
+    from nvplan.ai import agents
+
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(agents, "_ant_cli", lambda: None)
+    monkeypatch.setattr(agents.config, "AI_PROVIDER", "live", raising=False)
+    with pytest.raises(agents.MissingCredentials):
+        agents.resolve_model(None)
+
+
+def test_every_touchpoint_entrypoint_resolves_its_own_default_through_resolve_model():
+    """Static check on the real source of each entrypoint that owns a model=None default: it
+    must call resolve_model for that default, not get_model directly (see resolve_model's own
+    docstring for why the two are not interchangeable).
+
+    run_env_scan and assistant.ask are both checked separately: each is an entrypoint that can
+    write a brain/ file (run_env_scan since B2, assistant.ask since B3's draft_decision/
+    draft_hypotheses), so each must pass ``provider=config.AI_BRAIN_WRITE_PROVIDER`` rather than
+    falling through to the shared ``config.AI_PROVIDER`` default the other two touchpoints use -
+    see resolve_model's own docstring for why "auto" is wrong for a path that writes into the
+    source of truth."""
+    import inspect
+
+    from nvplan.ai import agents, assistant
+
+    for fn in (agents.run_revenue_proposal, agents.run_deviation_explanation):
+        src = inspect.getsource(fn)
+        assert "resolve_model(model)" in src, (
+            f"{fn.__name__} (nvplan/ai/agents.py) does not call resolve_model(model) for its own "
+            f"default - it would need a credential again with no explicit model= passed in"
+        )
+    env_scan_src = inspect.getsource(agents.run_env_scan)
+    assert "resolve_model(model, provider=config.AI_BRAIN_WRITE_PROVIDER)" in env_scan_src, (
+        "run_env_scan (nvplan/ai/agents.py) does not resolve its default through "
+        "config.AI_BRAIN_WRITE_PROVIDER (B2) - it would silently go live under config.AI_PROVIDER "
+        "== 'auto' whenever a credential is present, exactly the case this knob exists to avoid "
+        "for the one entrypoint that can write into brain/"
+    )
+    assistant_src = inspect.getsource(assistant.ask)
+    assert "resolve_model(model, provider=config.AI_BRAIN_WRITE_PROVIDER)" in assistant_src, (
+        "nvplan.ai.assistant.ask (B3) does not resolve its default through "
+        "config.AI_BRAIN_WRITE_PROVIDER - every conversation can now end in a brain write via "
+        "draft_decision/draft_hypotheses, so it must not go live just because a credential is "
+        "sitting in .env, exactly the case this knob exists to avoid"
+    )
+
+
+# --------------------------------------------------------------------------- 7: B2 - the brain writer is reachable
+#
+# The miss this guards against: brainkit/writer.py (B1) shipped fully built and unit-tested with
+# zero callers outside its own tests (tests/test_brainkit_writer.py) - a write substrate nobody
+# calls is exactly as dead as a tool no agent loads or a skill no builder passes. B2 gives it its
+# first real caller (bridge/ingest.py, called by nvplan.ai.agents.run_env_scan); this test pins
+# that fact statically so a future refactor can't quietly strand the writer again without this
+# suite catching it - the same "inspect the real source, don't assume the shape is right because
+# it looks wired" discipline test 4/6 above already use for skills and the provider seam.
+
+
+def test_brainkit_writer_has_a_real_non_test_caller():
+    """brainkit.writer.draft_ingestion/draft_decision/draft_hypotheses must be called from at
+    least one non-test module - today that is bridge/ingest.py (draft_ingestion, from
+    nvplan.ai.agents.run_env_scan). Grepping source (not just checking an import line) so a
+    module that imports brainkit.writer but never actually calls one of its draft_* functions
+    still fails this - importing is not calling."""
+    import inspect
+
+    from brainkit import writer as brainkit_writer
+    from bridge import ingest as bridge_ingest
+
+    draft_fn_names = [name for name in brainkit_writer.__all__ if name.startswith("draft_")]
+    assert draft_fn_names, "brainkit.writer.__all__ names no draft_* function to check reachability for"
+
+    ingest_src = inspect.getsource(bridge_ingest)
+    called = [name for name in draft_fn_names if f"{name}(" in ingest_src]
+    assert called, (
+        f"none of {draft_fn_names} is called from bridge/ingest.py - brainkit.writer would be "
+        f"built, unit-tested and orphaned again exactly as it was before B2"
+    )
+
+    agents_src = inspect.getsource(__import__("nvplan.ai.agents", fromlist=["run_env_scan"]).run_env_scan)
+    assert "write_env_scan_ingestion(" in agents_src, (
+        "nvplan.ai.agents.run_env_scan no longer calls bridge.ingest.write_env_scan_ingestion - "
+        "the brain-writing path (B2) would be built but never actually invoked by the touchpoint "
+        "that is supposed to use it"
+    )
+
+
+# --------------------------------------------------------------------------- 8: B3 - drafting is reachable, and only by the assistant
+#
+# The same miss test 7 guards against, applied to draft_decision/draft_hypotheses (PLATFORM.md
+# §12.6): brainkit.writer's own draft_decision/draft_hypotheses functions could ship fully built
+# and unit-tested with bridge/draft.py as their only caller and nvplan.ai.tools never actually
+# calling bridge.draft - a write substrate with a caller that itself has no caller is exactly as
+# dead as one with none. Checked both ways: reachability (built but unreachable) and containment
+# (reachable from a surface that was never supposed to carry it).
+
+
+def test_brainkit_draft_decision_and_hypotheses_have_a_real_non_test_caller():
+    """draft_decision/draft_hypotheses must be called from bridge/draft.py (B3's own caller,
+    mirroring bridge/ingest.py for draft_ingestion - test 7 above), and bridge.draft's own
+    draft_decision_and_index/draft_hypotheses_and_index must in turn be called from
+    nvplan/ai/tools.py's make_write_tools - the only place anything in nvplan.ai is allowed to
+    reach them, since nvplan.ai must never import brainkit directly (PLATFORM.md §7.1)."""
+    import inspect
+
+    from brainkit import writer as brainkit_writer
+    from bridge import draft as bridge_draft
+
+    draft_fn_names = [name for name in brainkit_writer.__all__ if name.startswith("draft_")]
+    bridge_draft_src = inspect.getsource(bridge_draft)
+    called = [name for name in draft_fn_names if f"{name}(" in bridge_draft_src]
+    assert set(called) >= {"draft_decision", "draft_hypotheses"}, (
+        f"bridge/draft.py does not call both draft_decision and draft_hypotheses (found: "
+        f"{sorted(called)}) - brainkit.writer's decision/hypothesis drafting would be built, "
+        f"unit-tested and orphaned, exactly the miss B2's own reachability test (7 above) guards "
+        f"against for draft_ingestion"
+    )
+
+    tools_src = inspect.getsource(__import__("nvplan.ai.tools", fromlist=["make_write_tools"]))
+    assert "draft_decision_and_index(" in tools_src and "draft_hypotheses_and_index(" in tools_src, (
+        "nvplan/ai/tools.py does not call bridge.draft.draft_decision_and_index/"
+        "draft_hypotheses_and_index - bridge/draft.py would be built and tested with no caller "
+        "in the AI layer at all"
+    )
+
+
+def test_draft_decision_and_hypotheses_are_named_only_by_the_assistant():
+    """The containment half: draft_decision/draft_hypotheses must be reachable from
+    ASSISTANT_WRITE_TOOLS and named by no touchpoint's _TOUCHPOINT_TOOLS write set - a touchpoint
+    silently acquiring a brain-write capability nothing asked it to carry would be exactly the
+    kind of unnoticed capability tests/test_ai_guardrails.py's explicit-enumeration discipline
+    exists to catch, applied here to reachability instead of to the tool-name allow-list itself."""
+    draft_tool_names = {"draft_decision", "draft_hypotheses"}
+    assert draft_tool_names <= set(ASSISTANT_WRITE_TOOLS)
+    for touchpoint, (_read_names, write_names) in _TOUCHPOINT_TOOLS.items():
+        overlap = draft_tool_names & write_names
+        assert not overlap, f"touchpoint {touchpoint!r} carries {sorted(overlap)} - only the assistant should"

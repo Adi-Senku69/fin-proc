@@ -99,6 +99,9 @@ def _mask(value: str) -> str:
 
 def print_configuration(out: Out) -> None:
     out("configuration (nvplan.config; .env is loaded at import, existing env wins)")
+    _kv(out, "provider", config.AI_PROVIDER, _source("NVPLAN_AI_PROVIDER"))
+    out("    (this check always uses the real client via build_chat_model regardless of AI_PROVIDER; "
+        "'auto' is what resolve_model uses for the touchpoints/assistant by default)")
     _kv(out, "model", config.AI_MODEL, _source("NVPLAN_AI_MODEL"))
     _kv(out, "effort", config.AI_EFFORT, _source("NVPLAN_AI_EFFORT"))
     _kv(out, "max_tokens", f"{config.AI_MAX_TOKENS:,}", _source("NVPLAN_AI_MAX_TOKENS"))

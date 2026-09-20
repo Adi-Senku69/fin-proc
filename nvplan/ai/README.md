@@ -20,12 +20,17 @@ questions.
 ## Hard rules and where they live
 
 * **Read-only / advisory** — `tools.make_read_tools` only selects. `tools.make_write_tools`
-  exposes exactly `record_external_note` and `record_revenue_proposal`; deepagents' built-in
-  `write_file/edit_file/delete` are removed by a read-only
+  builds four tools total: `record_external_note` and `record_revenue_proposal` (a database row
+  each) plus, since work package B3 (PLATFORM.md §12.6), `draft_decision`/`draft_hypotheses` (a
+  `brain/` markdown file, via `bridge.draft` - never a database row). `touchpoint_tools`'s
+  per-touchpoint name filter (`agents._TOUCHPOINT_TOOLS`) keeps the two brain-drafting tools off
+  every touchpoint; only the assistant's own `ASSISTANT_WRITE_TOOLS` names them. deepagents'
+  built-in `write_file/edit_file/delete` are removed by a read-only
   `FilesystemMiddleware(tools=["read_file", "ls", "grep"])` (see "Context management").
   `tests/test_ai_guardrails.py` asserts row counts of `plan_value, statement_line, actual,
   parameter, derivation, scenario` are unchanged after every run and that no agent carries a
-  tool named write*/insert*/update*/delete*/edit* besides the two allowed.
+  tool named write*/insert*/update*/delete*/edit* besides the four allowed
+  (`tools.ALLOWED_WRITE_TOOLS`).
 * **Rationale required** — `tools.validate_revenue_proposal` rejects an empty rationale (and a
   value outside `control_table.yaml: max_deviation_from_default_pct`, or a proposal that cites
   no existing note when `must_cite_note`). Rejection = error JSON to the model, nothing written.
@@ -144,6 +149,49 @@ explicitly to provoke a rejection. `fake.refusing_model()` scripts the refusal s
 `nvplan-demo` uses the scripted fakes by default and never goes live on its own. `--live` opts
 into the real model and is a hard error when no credential resolves, so a key sitting in `.env`
 can no longer make a plain `uv run nvplan-demo` spend money. `--fake-ai` is kept as a no-op alias.
+
+**The deterministic default provider (A1).** The scripted fakes above are test scaffolding: a
+test picks the script, so they only prove the code around a *given* answer. Separately from
+that, `nvplan.ai.agents.resolve_model` is the one explicit place that decides which model/provider
+an actual run of the AI layer uses, and it is what every entrypoint's own `model=None` default
+goes through now (`run_env_scan`, `run_revenue_proposal`, `run_deviation_explanation`,
+`nvplan.ai.assistant.ask` - not `get_model`, which is unconditional and still raises
+`MissingCredentials` with no key, by design, for `nvplan-ai-check` / `--live` / the API's own
+`resolve_model` in `nvplan/api/app.py`):
+
+```
+resolve_model(model):
+    a BaseChatModel passed in            -> returned untouched (test injection, as before)
+    config.AI_PROVIDER == "live"         -> get_model(model)            # real client or MissingCredentials
+    config.AI_PROVIDER == "deterministic" -> nvplan.ai.fake.deterministic_model()
+    config.AI_PROVIDER == "auto" (default):
+        credentials_available()          -> get_model(model)            # unchanged behaviour with a key
+        otherwise                        -> nvplan.ai.fake.deterministic_model()
+```
+
+`NVPLAN_AI_PROVIDER` (`config.AI_PROVIDER`, one of `auto | live | deterministic`) is the explicit
+override for either direction - forcing `live` still fails loudly with no key (never a silent
+live attempt), forcing `deterministic` opts out of the real model even with a key present (CI;
+iterating on something downstream of an AI write without spending money or fighting model
+nondeterminism).
+
+`nvplan.ai.fake.DeterministicChatModel` is the provider itself: a real, reactive `BaseChatModel`
+(not a script) that reads whatever the read tools return for the *actual* database of a run and
+computes its tool calls and structured answer from that - never a canned answer built to satisfy
+the schema. A revenue proposal leaves the valorized default unchanged unless an existing external
+note states a quantified, dated factor, and the resulting figure is clamped to the control
+table's own `max_deviation_from_default_pct` so `record_revenue_proposal`'s validator is
+genuinely exercised, not bypassed; an environmental-scan finding requires an existing note whose
+wording actually overlaps the framework position's own name; a deviation explanation reads its
+contributions straight off the deterministic `plan_vs_actual` table
+(`fake.contributions_from_table`, shared with the scripted deviation model above), so
+`figures.check_explanation` passes by construction; the assistant cites the real `plan_value`
+rows a tool call returned, so `assistant.verify_answer` has a real citation to check. This is
+what makes `uv run pytest` (no credential, no `.env`, nothing exported - see CI) exercise the
+whole AI path end to end rather than skip it: see
+`tests/test_ai_touchpoints.py::test_*_completes_offline_with_no_credential`,
+`tests/test_assistant.py::test_ask_completes_offline_with_no_credential`, and the provider-
+resolution assertions in `tests/test_reachability.py`.
 
 Note: deepagents auto-adds a `general-purpose` subagent (`task` tool) to every agent; it
 inherits the same tool set, so it cannot write anything the touchpoint itself cannot.

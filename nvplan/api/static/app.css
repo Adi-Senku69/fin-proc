@@ -2,36 +2,80 @@
  * prefers-color-scheme: dark, so the page reads in both a dark room (a demo, projected) and
  * daylight. Text and shape carry meaning (no emoji as interface elements, per UI.md). Layout
  * targets 1280 wide and degrades to a single column below 900.
+ *
+ * The token values below were ported from the reference React/Tailwind app (see UI.md "Design
+ * language" section): a slate neutral scale, an indigo accent, and emerald/amber/rose/violet/sky
+ * for status. This file stays hand-written CSS custom properties + plain rules — no Tailwind,
+ * no build step — but the *palette* and the shapes (pill badges, rounded-lg cards with a soft
+ * shadow, a segmented-control look for tabs, uppercase muted "eyebrow" labels) are the same
+ * vocabulary the reference app uses throughout its components.
  */
 
 :root {
-  --bg: #f5f6f8;
+  --bg: #f8fafc;              /* slate-50 */
   --panel-bg: #ffffff;
-  --fg: #1b1f24;
-  --muted: #5b6572;
-  --border: #d7dce2;
-  --accent: #2a5db0;
+  --fg: #1e293b;               /* slate-800 — body text */
+  --fg-strong: #0f172a;        /* slate-900 — headings, the figures that are "the product" */
+  --muted: #64748b;            /* slate-500 */
+  --border: #e2e8f0;           /* slate-200 — panel outlines, header rules */
+  --border-soft: #f1f5f9;      /* slate-100 — ordinary row dividers, one shade quieter */
+  --accent: #4f46e5;           /* indigo-600 */
+  --accent-hover: #4338ca;     /* indigo-700 */
   --accent-fg: #ffffff;
-  --rail-bg: #101826;
-  --rail-fg: #cfd8e3;
-  --rail-fg-active: #ffffff;
-  --rail-accent: #4f8ff0;
+  --accent-soft-bg: #eef2ff;   /* indigo-50 — tinted active/selected backgrounds */
+  --rail-bg: #ffffff;
+  --rail-fg: #64748b;
+  --rail-fg-active: #4338ca;
+  --rail-accent: #4f46e5;
+  --rail-border: var(--border);
 
-  --ok: #1c7c3f;
-  --ok-bg: #e4f5e9;
-  --warn: #9a6a00;
-  --warn-bg: #fbf0d3;
-  --error: #b3261e;
-  --error-bg: #fbe4e2;
-  --illustrative: #7a3fb0;
-  --illustrative-bg: #f0e4fb;
-  --decided: #0f6f6a;
-  --decided-bg: #dcf3f1;
-  --ai: #a35c00;
-  --ai-bg: #fbe9d0;
+  /* Status vocabulary, each a text/background/border triple (reference's own convention: a
+   * -900-on-100 badge with a -300 border). Semantics below are shared across the whole app:
+   * ok/decided/confirmed/pass       -> emerald  (the reference's own "confirmed" colour)
+   * warn/illustrative/pending/fair  -> amber    (the reference's own "illustrative" colour)
+   * error/rejected/missed/material  -> rose
+   * ai_proposed (machine-authored)  -> violet   (the reference's own ai_proposed path colour)
+   * cascaded/info/forecast          -> sky      (the reference's own cascaded/forecast colour)
+   * "decided" and "illustrative" alias the closest reference concept instead of inventing a
+   * seventh and eighth hue — see UI.md. */
+  --ok: #065f46;               /* emerald-800 */
+  --ok-bg: #d1fae5;            /* emerald-100 */
+  --ok-border: #6ee7b7;        /* emerald-300 */
 
-  --code-bg: #12161c;
-  --code-fg: #d9e0e8;
+  --warn: #92400e;             /* amber-800 */
+  --warn-bg: #fef3c7;          /* amber-100 */
+  --warn-border: #fcd34d;      /* amber-300 */
+
+  --error: #9f1239;            /* rose-800 */
+  --error-bg: #ffe4e6;         /* rose-100 */
+  --error-border: #fda4af;     /* rose-300 */
+
+  --ai: #5b21b6;               /* violet-800 */
+  --ai-bg: #ede9fe;            /* violet-100 */
+  --ai-border: #c4b5fd;        /* violet-300 */
+
+  --info: #075985;             /* sky-800 */
+  --info-bg: #e0f2fe;          /* sky-100 */
+  --info-border: #7dd3fc;      /* sky-300 */
+
+  --illustrative: var(--warn);
+  --illustrative-bg: var(--warn-bg);
+  --illustrative-border: var(--warn-border);
+
+  --decided: var(--ok);
+  --decided-bg: var(--ok-bg);
+  --decided-border: var(--ok-border);
+
+  /* The provenance "stamp" (chip-tag: the exact ingestion/source tag, PLATFORM.md §4.1) stays a
+   * deliberately bold, dark chip distinct from the ordinary light code boxes below — the app's
+   * own documented "provenance is the differentiator" decision, kept through this pass. */
+  --tag-bg: #1e293b;           /* slate-800 */
+  --tag-fg: #f1f5f9;           /* slate-100 */
+
+  /* Formula / prompt / raw-identifier boxes: the reference renders these as plain, quiet
+   * bg-slate-50 monospace blocks, not a dark "terminal" — carried over as-is. */
+  --code-bg: #f8fafc;          /* slate-50 */
+  --code-fg: #334155;          /* slate-700 */
 
   /* type scale — figures are the product; they get the top of the scale. Everything else
    * (labels, chips, secondary identifiers) sits below body text on purpose. */
@@ -52,38 +96,67 @@
   --space-5: 24px;
   --space-6: 32px;
 
-  --focus-ring: #4f8ff0;
+  /* shape + elevation, taken from the reference's rounded-md/rounded-lg/rounded-full and its
+   * shadow-sm cards. */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-full: 999px;
+  --shadow-sm: 0 1px 2px 0 rgba(15, 23, 42, 0.06), 0 1px 1px 0 rgba(15, 23, 42, 0.04);
+
+  --focus-ring: #6366f1;       /* indigo-500 */
 }
 
 @media (prefers-color-scheme: dark) {
+  /* The reference app has no dark mode of its own (Tailwind build, no `dark:` variants
+   * anywhere) — this block is not "taken" from it. It predates this pass and is kept because
+   * removing a working accessibility mode nobody asked to lose is not what "adopt the
+   * reference's design language" means; see UI.md. Hues below follow the same light-mode
+   * mapping (indigo/emerald/amber/rose/violet/sky) at dark-mode-appropriate values. */
   :root {
-    --bg: #14181f;
-    --panel-bg: #1c222b;
-    --fg: #e7ecf2;
-    --muted: #9aa5b1;
-    --border: #333c48;
-    --accent: #6fa1ee;
-    --accent-fg: #0c1522;
-    --rail-bg: #0b1119;
-    --rail-fg: #a9b6c4;
-    --rail-fg-active: #ffffff;
-    --rail-accent: #6fa1ee;
+    --bg: #0f172a;              /* slate-900 */
+    --panel-bg: #1e293b;        /* slate-800 */
+    --fg: #e2e8f0;              /* slate-200 */
+    --fg-strong: #f8fafc;       /* slate-50 */
+    --muted: #94a3b8;           /* slate-400 */
+    --border: #334155;          /* slate-700 */
+    --border-soft: #26324a;
+    --accent: #818cf8;          /* indigo-400 */
+    --accent-hover: #6366f1;    /* indigo-500 */
+    --accent-fg: #0f172a;
+    --accent-soft-bg: rgba(129, 140, 248, 0.16);
+    --rail-bg: #0b1120;
+    --rail-fg: #94a3b8;
+    --rail-fg-active: #c7d2fe;  /* indigo-200 */
+    --rail-accent: #818cf8;
 
-    --ok: #62d68a;
-    --ok-bg: #123321;
-    --warn: #e6bd52;
-    --warn-bg: #3a2f0f;
-    --error: #ef8983;
-    --error-bg: #3a1614;
-    --illustrative: #c9a2ec;
-    --illustrative-bg: #2f2044;
-    --decided: #74d9d1;
-    --decided-bg: #10322f;
-    --ai: #f0b968;
-    --ai-bg: #3a2a10;
+    --ok: #6ee7b7;              /* emerald-300 */
+    --ok-bg: #064e3b;           /* emerald-900 */
+    --ok-border: #059669;       /* emerald-600 */
 
-    --code-bg: #0b0e12;
-    --code-fg: #d9e0e8;
+    --warn: #fcd34d;            /* amber-300 */
+    --warn-bg: #451a03;         /* amber-950 */
+    --warn-border: #d97706;     /* amber-600 */
+
+    --error: #fda4af;           /* rose-300 */
+    --error-bg: #4c0519;        /* rose-950 */
+    --error-border: #e11d48;    /* rose-600 */
+
+    --ai: #c4b5fd;              /* violet-300 */
+    --ai-bg: #2e1065;           /* violet-950 */
+    --ai-border: #7c3aed;       /* violet-600 */
+
+    --info: #7dd3fc;            /* sky-300 */
+    --info-bg: #082f49;         /* sky-950 */
+    --info-border: #0284c7;     /* sky-600 */
+
+    --tag-bg: #e2e8f0;          /* slate-200 — inverted: the boldest contrast in a dark UI is a
+                                    light stamp, not a darker one. */
+    --tag-fg: #0f172a;
+
+    --code-bg: #26324a;
+    --code-fg: #cbd5e1;         /* slate-300 */
+
+    --focus-ring: #818cf8;      /* indigo-400 */
   }
 }
 
@@ -110,8 +183,8 @@ a:hover { text-decoration: underline; }
 :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
 h2, h3, h4 { margin: 0.7em 0 0.4em; font-weight: 700; letter-spacing: -0.01em; }
-h2 { font-size: var(--text-lg); }
-h3 { font-size: var(--text-md); }
+h2 { font-size: var(--text-lg); color: var(--fg-strong); }
+h3 { font-size: var(--text-md); color: var(--fg-strong); }
 h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; }
 
 /* the technical identifier, secondary everywhere it appears next to a plain label
@@ -119,10 +192,9 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
 .term-code {
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: var(--text-2xs);
-  color: var(--muted);
   background: var(--code-bg);
   color: var(--code-fg);
-  opacity: 0.72;
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 0 5px;
   white-space: nowrap;
@@ -150,6 +222,7 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
 .app-title {
   font-weight: 700;
   font-size: 1.05em;
+  color: var(--fg-strong);
   /* a flex item's default min-width is its content size, which would otherwise
    * refuse to shrink and push the header (and the whole grid) wider than the
    * viewport - see .health-badge below, the actual long-content offender. */
@@ -161,7 +234,7 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
   color: var(--muted);
   background: none;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 4px 10px;
   cursor: pointer;
   font-family: inherit;
@@ -176,10 +249,11 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.health-badge.health-bad { color: var(--error); border-color: var(--error); }
+.health-badge.health-bad { color: var(--error); border-color: var(--error-border); background: var(--error-bg); }
 
 .app-rail {
   background: var(--rail-bg);
+  border-right: 1px solid var(--rail-border);
   padding: 12px 0;
   display: flex;
   flex-direction: column;
@@ -191,9 +265,10 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
   padding: 10px 16px;
   border-left: 3px solid transparent;
   font-size: 0.95em;
+  font-weight: 500;
 }
-.rail-link:hover { color: var(--rail-fg-active); text-decoration: none; background: rgba(255,255,255,0.06); }
-.rail-link.active { color: var(--rail-fg-active); border-left-color: var(--rail-accent); background: rgba(255,255,255,0.08); font-weight: 600; }
+.rail-link:hover { color: var(--fg-strong); text-decoration: none; background: var(--border-soft); }
+.rail-link.active { color: var(--rail-fg-active); border-left-color: var(--rail-accent); background: var(--accent-soft-bg); font-weight: 700; }
 
 .app-main {
   padding: 16px 20px 40px;
@@ -211,17 +286,18 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
 
 .panel {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 12px 14px;
   margin: 10px 0;
   background: var(--panel-bg);
+  box-shadow: var(--shadow-sm);
 }
 
-.error-panel { border-color: var(--error); background: var(--error-bg); }
+.error-panel { border-color: var(--error-border); background: var(--error-bg); }
 .error-title { font-weight: 700; color: var(--error); }
 .error-message { margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
 
-.not-available { border-color: var(--warn); background: var(--warn-bg); }
+.not-available { border-color: var(--warn-border); background: var(--warn-bg); }
 .not-available .error-title { color: var(--warn); }
 
 .validate-banner { }
@@ -234,30 +310,38 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
 .btn {
   font-family: inherit;
   font-size: 0.9em;
+  font-weight: 600;
   padding: 6px 14px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--accent);
   background: var(--accent);
   color: var(--accent-fg);
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
 }
-.btn:hover { filter: brightness(1.08); }
+.btn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn-small { padding: 3px 10px; font-size: 0.82em; }
 
-.tabs { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
-.subtabs { margin-top: -2px; }
+/* A segmented control, not a row of pills — the reference's own shape for every either/or or
+ * one-of-few switch (scenario kind/variant, backtest basis, statement tabs): a quiet track with
+ * the active option raised on a white/panel chip. */
+.tabs { display: inline-flex; gap: 2px; margin: 8px 0; flex-wrap: wrap; background: var(--border-soft); padding: 4px; border-radius: var(--radius-md); width: fit-content; max-width: 100%; }
+.subtabs { margin-top: 6px; }
 .tab-btn {
   font-family: inherit;
-  background: var(--panel-bg);
-  border: 1px solid var(--border);
-  color: var(--fg);
-  padding: 5px 12px;
-  border-radius: 999px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 5px 14px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 0.88em;
+  font-weight: 600;
+  white-space: nowrap;
 }
-.tab-btn.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+.tab-btn:hover { color: var(--fg-strong); }
+.tab-btn.active { background: var(--panel-bg); color: var(--fg-strong); border-color: var(--border); box-shadow: var(--shadow-sm); }
 
 .trace-form, form.trace-form { display: flex; gap: 10px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
 .trace-form label { display: flex; gap: 4px; align-items: center; font-size: 0.9em; color: var(--muted); }
@@ -265,7 +349,7 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
   font-family: inherit;
   padding: 4px 6px;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--panel-bg);
   color: var(--fg);
 }
@@ -279,7 +363,7 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
   font-size: var(--text-2xs);
   font-weight: 600;
   padding: 2px 9px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid var(--border);
   background: var(--panel-bg);
   color: var(--fg);
@@ -298,20 +382,22 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
   background: var(--panel-bg);
 }
 .chip-path-marked { border-width: 2px; }
-.chip-path-decided { color: var(--decided); border-color: var(--decided); background: var(--decided-bg); }
-.chip-path-ai_proposed { color: var(--ai); border-color: var(--ai); background: var(--ai-bg); }
+.chip-path-decided { color: var(--decided); border-color: var(--decided-border); background: var(--decided-bg); }
+.chip-path-ai_proposed { color: var(--ai); border-color: var(--ai-border); background: var(--ai-bg); }
 
-.chip-illustrative { background: var(--illustrative-bg); color: var(--illustrative); border-color: var(--illustrative); font-weight: 700; }
-.chip-error { background: var(--error-bg); color: var(--error); border-color: var(--error); }
-.chip-warning { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
+.chip-illustrative { background: var(--illustrative-bg); color: var(--illustrative); border-color: var(--illustrative-border); font-weight: 700; }
+.chip-error { background: var(--error-bg); color: var(--error); border-color: var(--error-border); }
+.chip-warning { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
 .chip-tag {
   /* Provenance is the differentiator: the plain "who/what said this" reading is the label
    * (terms.js tagTerm), styled prominently like any other chip; the exact tag as written
    * (a full ingestion/source path, PLATFORM.md §4.1) rides alongside as a secondary
-   * .term-code, never as the chip's only content, and never removed. */
-  background: var(--code-bg);
-  color: var(--code-fg);
-  border-color: var(--code-bg);
+   * .term-code, never as the chip's only content, and never removed. Deliberately its own
+   * dark "stamp" tokens (--tag-bg/--tag-fg), not the same ones the code/formula boxes use
+   * below, so it keeps standing out even now that those are a quiet reference-style grey. */
+  background: var(--tag-bg);
+  color: var(--tag-fg);
+  border-color: var(--tag-bg);
   font-weight: 700;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -327,25 +413,25 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
   vertical-align: top;
   margin: 2px 0 2px 2px;
 }
-.chip-touchpoint { background: var(--ai-bg); color: var(--ai); border-color: var(--ai); }
+.chip-touchpoint { background: var(--ai-bg); color: var(--ai); border-color: var(--ai-border); }
 
 .chip-status.chip-decided, .chip-status.chip-confirmed, .chip-status.chip-within,
-.chip-status.chip-supported { background: var(--decided-bg); color: var(--decided); border-color: var(--decided); }
+.chip-status.chip-supported { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
 .chip-status.chip-pending, .chip-status.chip-proposed, .chip-status.chip-open,
-.chip-status.chip-marginal { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
+.chip-status.chip-marginal { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
 .chip-status.chip-superseded, .chip-status.chip-rejected, .chip-status.chip-refuted,
-.chip-status.chip-missed { background: var(--error-bg); color: var(--error); border-color: var(--error); }
-.chip-status.chip-ai_proposed { background: var(--ai-bg); color: var(--ai); border-color: var(--ai); }
+.chip-status.chip-missed { background: var(--error-bg); color: var(--error); border-color: var(--error-border); }
+.chip-status.chip-ai_proposed { background: var(--ai-bg); color: var(--ai); border-color: var(--ai-border); }
 
-.chip-verdict.chip-within { background: var(--ok-bg); color: var(--ok); border-color: var(--ok); }
-.chip-verdict.chip-marginal { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
-.chip-verdict.chip-missed { background: var(--error-bg); color: var(--error); border-color: var(--error); }
+.chip-verdict.chip-within { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
+.chip-verdict.chip-marginal { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
+.chip-verdict.chip-missed { background: var(--error-bg); color: var(--error); border-color: var(--error-border); }
 
 /* path badge on trace nodes / plan cells */
-.path-badge { font-size: 0.75em; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); margin-left: 6px; }
+.path-badge { font-size: 0.75em; padding: 1px 7px; border-radius: var(--radius-full); border: 1px solid var(--border); margin-left: 6px; }
 .path-badge.path-marked { border-width: 2px; font-weight: 700; }
-.path-badge.path-decided { color: var(--decided); border-color: var(--decided); background: var(--decided-bg); }
-.path-badge.path-ai_proposed { color: var(--ai); border-color: var(--ai); background: var(--ai-bg); }
+.path-badge.path-decided { color: var(--decided); border-color: var(--decided-border); background: var(--decided-bg); }
+.path-badge.path-ai_proposed { color: var(--ai); border-color: var(--ai-border); background: var(--ai-bg); }
 
 /* ---- layout: split panes ------------------------------------------------ */
 
@@ -372,7 +458,7 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
   font-size: 0.92em;
 }
 .data-table th, .data-table td, .param-table th, .param-table td {
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
   padding: 5px 8px;
   text-align: right;
   /* A number (or a date, or a short identifier) must never break mid-token - that was
@@ -391,8 +477,17 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
 }
 .data-table th:first-child, .data-table td:first-child,
 .param-table th:first-child, .param-table td:first-child { text-align: left; }
-.data-table tr:first-child th { color: var(--muted); font-weight: 600; border-bottom: 2px solid var(--border); }
-.row-label { white-space: nowrap; font-weight: 600; }
+/* Header row: reference's own bg-slate-50 + uppercase tracked-out label treatment. */
+.data-table tr:first-child th {
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.82em;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.row-label { white-space: nowrap; font-weight: 600; color: var(--fg-strong); }
 
 .kv-table { width: auto; }
 .kv-table th { text-align: left; color: var(--muted); padding-right: 14px; font-weight: 500; white-space: nowrap; }
@@ -403,7 +498,7 @@ h4 { font-size: var(--text-xs); color: var(--muted); text-transform: uppercase; 
 .kv-table td { text-align: left; white-space: nowrap; }
 .kv-table td.kv-value-prose { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 
-tr.active-row, tr.claim-row.active { background: var(--illustrative-bg); }
+tr.active-row, tr.claim-row.active { background: var(--accent-soft-bg); }
 tr.verdict-missed { background: var(--error-bg); }
 tr.verdict-marginal { background: var(--warn-bg); }
 
@@ -418,10 +513,11 @@ tr.verdict-marginal { background: var(--warn-bg); }
   cursor: pointer;
   font-size: var(--text-base);
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   padding: 3px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
-.cell-btn:hover { background: var(--border); }
+.cell-btn:hover { background: var(--border-soft); }
 td.plan-cell { position: relative; }
 td.cell-marked { background: var(--decided-bg); }
 td.cell-ai_proposed { background: var(--ai-bg); }
@@ -448,7 +544,7 @@ td.cell-ai_proposed { background: var(--ai-bg); }
 
 details.trace-node {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   margin: 6px 0;
   padding: 4px 8px;
   background: var(--panel-bg);
@@ -475,7 +571,7 @@ details.trace-node > summary.trace-summary::-webkit-details-marker { display: no
 }
 details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90deg); }
 .trace-label { font-weight: 600; overflow-wrap: anywhere; }
-.trace-value { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 700; color: var(--accent); font-size: var(--text-sm); }
+.trace-value { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 700; color: var(--accent); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 /* The standalone Trace view doesn't wrap each node's parameters/inputs table in a
  * .pane (only the Plan view's side panel does) - give the node body its own
  * horizontal scroll directly, so a wide parameters table scrolls next to its own
@@ -488,13 +584,13 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
   border-left: 3px solid var(--trace-guide, var(--border));
 }
 .trace-children.depth-guide-0 { --trace-guide: var(--accent); }
-.trace-children.depth-guide-1 { --trace-guide: var(--decided); }
+.trace-children.depth-guide-1 { --trace-guide: var(--ok); }
 .trace-children.depth-guide-2 { --trace-guide: var(--ai); }
-.trace-children.depth-guide-3 { --trace-guide: var(--illustrative); }
+.trace-children.depth-guide-3 { --trace-guide: var(--info); }
 .trace-children.depth-guide-4 { --trace-guide: var(--warn); }
 .trace-children.depth-guide-5 { --trace-guide: var(--muted); }
 .block-title { font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 700; margin: 8px 0 2px; }
-.formula { font-family: ui-monospace, Menlo, Consolas, monospace; background: var(--code-bg); color: var(--code-fg); padding: 4px 8px; border-radius: 5px; display: inline-block; }
+.formula { font-family: ui-monospace, Menlo, Consolas, monospace; background: var(--code-bg); color: var(--code-fg); border: 1px solid var(--border); padding: 4px 8px; border-radius: var(--radius-sm); display: inline-block; }
 
 .ai-block, .claim-block { border-top: 1px dashed var(--border); margin-top: 8px; padding-top: 8px; }
 .evidence-list { margin: 4px 0; padding-left: 18px; }
@@ -504,8 +600,9 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
 .prompt-box {
   background: var(--code-bg);
   color: var(--code-fg);
+  border: 1px solid var(--border);
   padding: 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   max-height: 320px;
   overflow: auto;
   white-space: pre-wrap;
@@ -526,10 +623,10 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
 /* ---- demo -------------------------------------------------------------------- */
 
 .demo-steps { display: flex; flex-direction: column; gap: 12px; }
-.demo-step { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; background: var(--panel-bg); }
+.demo-step { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 16px; background: var(--panel-bg); box-shadow: var(--shadow-sm); }
 .demo-step-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .demo-step-head h3 { margin: 0; }
-.endpoint-label { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.82em; }
+.endpoint-label { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.82em; color: var(--muted); }
 .demo-step-out { margin-top: 8px; }
 .kv-line { font-size: 0.92em; }
 .impact-link { margin: 4px 0; }
@@ -545,7 +642,7 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
   color: var(--muted);
   font-size: var(--text-sm);
 }
-.loading-panel { border: 1px dashed var(--border); border-radius: 8px; background: var(--panel-bg); }
+.loading-panel { border: 1px dashed var(--border); border-radius: var(--radius-md); background: var(--panel-bg); }
 .spinner {
   display: inline-block;
   width: 14px;
@@ -566,7 +663,7 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
   align-items: flex-start;
   gap: var(--space-2);
   border: 1px dashed var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel-bg);
 }
 .empty-text { color: var(--muted); }
@@ -577,8 +674,8 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
   font-size: var(--text-xs);
   color: var(--warn);
   background: var(--warn-bg);
-  border: 1px solid var(--warn);
-  border-radius: 6px;
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
   margin-bottom: var(--space-3);
 }
@@ -596,7 +693,7 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
   font-size: var(--text-base);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel-bg);
   color: var(--fg);
   resize: vertical;
@@ -607,14 +704,14 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
   font-size: var(--text-sm);
   padding: var(--space-2);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel-bg);
   color: var(--fg);
 }
 
 .ask-thread { display: flex; flex-direction: column; gap: var(--space-4); }
-.ask-exchange { border: 1px solid var(--border); border-radius: 10px; padding: var(--space-4); background: var(--panel-bg); }
-.ask-question-echo { font-weight: 700; font-size: var(--text-md); margin-bottom: var(--space-2); }
+.ask-exchange { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-4); background: var(--panel-bg); box-shadow: var(--shadow-sm); }
+.ask-question-echo { font-weight: 700; font-size: var(--text-md); margin-bottom: var(--space-2); color: var(--fg-strong); }
 .ask-answer-prose { font-size: var(--text-base); line-height: 1.7; }
 .ask-answer-prose .text-segment { white-space: pre-wrap; }
 
@@ -627,10 +724,10 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
   gap: 5px;
   margin: 0 2px;
   padding: 2px 10px 3px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1.5px solid var(--accent);
-  background: var(--bg);
-  color: var(--fg);
+  background: var(--accent-soft-bg);
+  color: var(--fg-strong);
   font-weight: 700;
   cursor: pointer;
   font-size: 0.98em;
@@ -639,7 +736,7 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
 .figure-chip:hover { background: var(--accent); color: var(--accent-fg); }
 .figure-chip .figure-chip-label { font-weight: 500; color: var(--muted); }
 .figure-chip:hover .figure-chip-label { color: var(--accent-fg); opacity: 0.85; }
-.figure-chip .figure-chip-value { font-family: ui-monospace, Menlo, Consolas, monospace; }
+.figure-chip .figure-chip-value { font-family: ui-monospace, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
 
 .claim-chip {
   display: inline-flex;
@@ -647,25 +744,26 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
   gap: 5px;
   margin: 0 2px;
   padding: 2px 10px 3px;
-  border-radius: 8px;
-  border: 1.5px solid var(--decided);
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--decided-border);
   background: var(--decided-bg);
   color: var(--decided);
   font-weight: 700;
   cursor: pointer;
   font-size: 0.98em;
 }
-.claim-chip:hover { filter: brightness(1.1); }
+.claim-chip:hover { filter: brightness(0.95); }
 
 .ask-proposal-card {
   margin-top: var(--space-3);
-  border: 2px solid var(--ai);
+  border: 2px solid var(--ai-border);
   background: var(--ai-bg);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: var(--space-3) var(--space-4);
+  box-shadow: var(--shadow-sm);
 }
 .ask-proposal-title { font-weight: 700; color: var(--ai); text-transform: uppercase; font-size: var(--text-xs); letter-spacing: 0.04em; margin-bottom: 6px; }
-.ask-proposal-value { font-size: var(--text-lg); font-weight: 700; margin: 4px 0; }
+.ask-proposal-value { font-size: var(--text-lg); font-weight: 700; margin: 4px 0; color: var(--fg-strong); }
 .ask-proposal-actions { display: flex; gap: var(--space-2); margin-top: var(--space-3); }
 .btn-confirm { background: var(--ok); border-color: var(--ok); color: #fff; }
 .btn-reject { background: var(--error); border-color: var(--error); color: #fff; }
@@ -674,9 +772,9 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
  * error-panel — deliberately prominent, explained in plain words, never a corner note. */
 .ask-refusal {
   margin-top: var(--space-2);
-  border: 2px solid var(--error);
+  border: 2px solid var(--error-border);
   background: var(--error-bg);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: var(--space-4);
 }
 .ask-refusal-title { font-weight: 700; color: var(--error); font-size: var(--text-md); margin-bottom: 4px; }
@@ -691,7 +789,7 @@ details[open] > summary.trace-summary .trace-disclosure { transform: rotate(90de
 
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 1fr; }
-  .app-rail { flex-direction: row; overflow-x: auto; padding: 6px; }
+  .app-rail { flex-direction: row; overflow-x: auto; padding: 6px; border-right: none; border-bottom: 1px solid var(--rail-border); }
   .rail-link { border-left: none; border-bottom: 3px solid transparent; padding: 8px 12px; white-space: nowrap; }
   .rail-link.active { border-left-color: transparent; border-bottom-color: var(--rail-accent); }
   /* .has-selection must be named here too: it is more specific than the bare

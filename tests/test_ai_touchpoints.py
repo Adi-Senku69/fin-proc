@@ -9,13 +9,24 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from nvplan.ai import ExplanationRejected, ProposalRejected, plan_vs_actual, run_deviation_explanation, run_env_scan, run_revenue_proposal
-from nvplan.ai.fake import contributions_from_table, scripted_deviation_model, scripted_env_scan_model, scripted_revenue_model
+from nvplan.ai.fake import DeterministicChatModel, contributions_from_table, scripted_deviation_model, scripted_env_scan_model, scripted_revenue_model
 from nvplan.api.app import create_app
 from nvplan.ai.prompts import DEVIATION_EXPLANATION_SYSTEM, ENV_SCAN_SYSTEM, REVENUE_PROPOSAL_SYSTEM
 from nvplan.db.models import Actual, AiRecord, AiStatus, Category, ExternalNote, NoteSource, Touchpoint
 from test_ai_fixtures import PLAN_YEAR, ai_db  # noqa: F401 (fixture)
 
 DEFAULT_2027 = 22_000.0
+
+
+@pytest.fixture()
+def no_credentials(monkeypatch):
+    """No Anthropic credential resolvable at all - the shape a fresh CI runner is in. A1: the
+    three touchpoints must still complete end to end in this state, via the deterministic
+    default provider (nvplan.ai.agents.resolve_model)."""
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("nvplan.ai.agents._ant_cli", lambda: None)
+    return None
 
 
 def _note_ids(factory) -> list[int]:
@@ -321,3 +332,53 @@ def test_deviation_explanation_api_returns_422_on_mismatch(ai_db):
         assert r.status_code == 422, r.text
         assert "PERS.plan" in r.json()["detail"]
         assert client.get("/ai/records").json() == []
+
+
+# --------------------------------------------------------------------------- A1: offline default provider
+
+
+def test_env_scan_completes_offline_with_no_credential(ai_db, no_credentials):
+    """The default (model=None) path with no Anthropic credential at all must still complete:
+    nvplan.ai.agents.resolve_model falls back to the deterministic provider, which reads the
+    real framework/notes tool results and flags a genuinely-related position."""
+    factory, _ = ai_db
+    rec = run_env_scan(factory, positions_subset=["D2"])
+    assert rec.status is AiStatus.proposed
+    assert rec.model_version == "deterministic-v1"
+    assert rec.prompt_text and rec.response_text and rec.rationale.strip()
+    # D2.P2 Inflation / D2.P4 Wage growth-ish position should pick up the PERS wage-agreement note
+    # via real keyword overlap - not a hardcoded finding.
+    with factory() as s:
+        notes = s.scalars(select(ExternalNote)).all()
+    assert any(n.source == NoteSource.ai_scan for n in notes) or "No existing external note" in rec.rationale
+
+
+def test_revenue_proposal_completes_offline_with_no_credential(ai_db, no_credentials):
+    factory, _ = ai_db
+    rec = run_revenue_proposal(factory, scenario_kind="base", year=2027, default_value=DEFAULT_2027)
+    assert rec.status is AiStatus.proposed
+    assert rec.model_version == "deterministic-v1"
+    assert rec.proposed_value is not None and rec.proposed_value > 0
+    assert rec.rationale.strip()
+    # the illustrative REV note for 2027 ("ends Q2 2027") is genuine, quantified data - the
+    # deterministic provider must actually use it, not just echo the unchanged default.
+    assert rec.proposed_value != DEFAULT_2027
+    assert abs(rec.proposed_value - DEFAULT_2027) / DEFAULT_2027 * 100 <= 25 + 1e-6  # control-table bound
+
+
+def test_deviation_explanation_completes_offline_with_no_credential(ai_db, no_credentials):
+    factory, _ = ai_db
+    rec = run_deviation_explanation(factory, scenario_kind="base", year=PLAN_YEAR)
+    assert rec.status is AiStatus.proposed
+    assert rec.model_version == "deterministic-v1"
+    assert rec.rationale.strip()
+
+
+def test_deterministic_provider_is_a_real_bound_chat_model(ai_db, no_credentials):
+    """Sanity: the object resolve_model hands to build_touchpoint_agent is really the
+    deterministic model, not a fake accidentally left set up for a live credential."""
+    from nvplan.ai.agents import resolve_model
+
+    model = resolve_model(None)
+    assert isinstance(model, DeterministicChatModel)
+    assert model.model_version == "deterministic-v1"

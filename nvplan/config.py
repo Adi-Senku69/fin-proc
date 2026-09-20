@@ -167,6 +167,53 @@ AI_MAX_TOKENS = _env_int("NVPLAN_AI_MAX_TOKENS", 16_000)
 # Empty by default: nothing in this PoC needs a beta.
 AI_BETAS: list[str] = _env_list("NVPLAN_AI_BETAS")
 
+# --------------------------------------------------------------------------- AI provider selection (A1)
+#
+# Which provider nvplan.ai.agents.resolve_model actually builds for a touchpoint / the assistant's
+# own default (model=None) resolution - see that function's docstring for the full contract.
+# "auto" (default) is the deterministic, offline provider when no Anthropic credential is
+# resolvable and the real ChatAnthropic model when one is, so the whole AI path - all three
+# touchpoints plus the assistant - runs with no key, no network and no cost, and a key dropped
+# into .env keeps driving the real model exactly as before with no other change anywhere.
+# "live" / "deterministic" are the explicit, intentional overrides: force the real client
+# regardless (still raises MissingCredentials with no key - never a silent live attempt), or
+# force the offline provider regardless (e.g. CI, or iterating on brain/ writers without spending
+# or nondeterminism). get_model() itself is untouched by this knob: it always builds the real
+# client (or raises), which is what nvplan-ai-check / --live / the API's own resolve_model want.
+AI_PROVIDERS: tuple[str, ...] = ("auto", "live", "deterministic")
+AI_PROVIDER = _env("NVPLAN_AI_PROVIDER") or "auto"
+if AI_PROVIDER not in AI_PROVIDERS:
+    raise ValueError(
+        f"NVPLAN_AI_PROVIDER={AI_PROVIDER!r} is not valid; expected one of {', '.join(AI_PROVIDERS)}"
+    )
+
+# B2 (PLATFORM.md §12.4): the brain-writing path's own provider knob, deliberately separate from
+# AI_PROVIDER above. nvplan.ai.agents.run_env_scan is the one entrypoint that can write a real
+# brain/ingestion/ markdown file (bridge.ingest.write_env_scan_ingestion), and this repo's own
+# .env ships a live ANTHROPIC_API_KEY - under AI_PROVIDER's "auto" semantics that key always wins,
+# which is exactly wrong for a path that writes into the source of truth on every developer
+# machine that happens to have a key configured for the other two touchpoints. So the default here
+# is "deterministic" (not "auto"): no credential, however available, is used for the scan that
+# feeds a brain write unless this is set explicitly. Same closed set as AI_PROVIDER, reusing
+# resolve_model's own dispatch (its ``provider=`` override) rather than a second implementation -
+# "live" is an explicit opt-in (still raises MissingCredentials with no key), "auto" restores the
+# ordinary credential-present-then-live behaviour for anyone who deliberately wants it here too.
+AI_BRAIN_WRITE_PROVIDER = _env("NVPLAN_AI_BRAIN_WRITE_PROVIDER") or "deterministic"
+if AI_BRAIN_WRITE_PROVIDER not in AI_PROVIDERS:
+    raise ValueError(
+        f"NVPLAN_AI_BRAIN_WRITE_PROVIDER={AI_BRAIN_WRITE_PROVIDER!r} is not valid; expected one of "
+        f"{', '.join(AI_PROVIDERS)}"
+    )
+
+# --------------------------------------------------------------------------- brain (PLATFORM.md §3, §12)
+
+# Default brain/ directory the write path above targets when no brain_root is passed explicitly.
+# nvplan/api/app.py computes the same path independently for its own reindex/validate routes
+# (DEFAULT_BRAIN_ROOT) - this is the shared default for nvplan.ai's own write path, not a forced
+# unification of the two (nvplan/api is the documented composition-layer exception that may import
+# brainkit/bridge directly; nvplan.ai is not - see bridge/ingest.py's module docstring).
+BRAIN_ROOT = PROJECT_ROOT / "brain"
+
 # Total attempts nvplan.ai.assistant.ask() gives the model before AnswerRejected propagates
 # (UI.md Part 3's correction loop): 1 = today's behaviour, no correction; the default of 3 gives
 # the model two chances to correct itself after a verification failure, fed back via

@@ -67,6 +67,8 @@ SKILL_NAMES: tuple[str, ...] = (
     "strategy-swot",
     # the conversational assistant (UI.md Part 3)
     "assistant-citation-method",
+    # drafting a decision/hypothesis from a question (PLATFORM.md §12.6, work package B3)
+    "decision-drafting-method",
 )
 
 #: Which surface each skill is FOR - the one real mapping every ``skills=`` consumer builds its
@@ -85,6 +87,7 @@ SKILL_SURFACE: dict[str, str] = {
     "strategy-product-vision": "assistant",
     "strategy-swot": "assistant",
     "assistant-citation-method": "assistant",
+    "decision-drafting-method": "assistant",
 }
 
 #: Every surface named in SKILL_SURFACE, once each.
