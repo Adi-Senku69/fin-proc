@@ -228,7 +228,7 @@ def _confine(candidate: Path, *, brain_root: Path, collection_dir: Path) -> str 
     ``collection_dir``. ``Path.resolve()`` fully resolves every symlink in the existing
     part of the path and normalizes '..' lexically for the rest, so this also catches a
     traversal that the slug/date character-set checks somehow missed."""
-    if False and candidate.is_symlink():
+    if candidate.is_symlink():
         return f"refusing to write through a symlink: {candidate}"
     resolved_root = brain_root.resolve()
     resolved_collection = collection_dir.resolve()
